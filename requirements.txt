@@ -1,8 +1,10 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-torch==2.2.2+cpu
-torchvision==0.17.2+cpu
+# PyTorch (par compatível, disponível para CPU e Python 3.11)
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
 
+# Ultralytics + deps headless
 ultralytics==8.3.0
 opencv-python-headless==4.9.0.80
 pillow==10.4.0
@@ -11,5 +13,7 @@ psutil==5.9.8
 PyYAML==6.0.1
 requests==2.32.3
 tqdm==4.66.5
+
+# API
 fastapi==0.112.2
 uvicorn[standard]==0.30.6

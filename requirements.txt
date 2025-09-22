@@ -1,21 +1,13 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Par compatível com Python 3.13 (cp313)
-torch==2.7.0+cpu
-torchvision==0.22.0+cpu
-
-# Ultralytics + deps em servidor (headless)
+torch==2.5.1+cpu
+# (sem torchvision)
 ultralytics==8.3.0
-opencv-python-headless==4.9.0.80
+opencv-python-headless==4.10.0.84
 pillow==10.4.0
 numpy==1.26.4
-psutil==5.9.8
-PyYAML==6.0.1
-requests==2.32.3
-tqdm==4.66.5
-
-# API
 fastapi==0.112.2
 uvicorn[standard]==0.30.6
+
+
 
 

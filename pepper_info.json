@@ -1,0 +1,16 @@
+{
+  "Biquinho": {
+    "scoville": "500–1.000 SHU (suave)",
+    "descricao": "Pequena, adocicada e pouco ardente.",
+    "usos": ["conservas", "aperitivos", "molhos leves"],
+    "conservacao": "Geladeira por 7–10 dias; conserva em vinagre dura mais.",
+    "links": ["https://pt.wikipedia.org/wiki/Pimenta_biquinho"]
+  },
+  "Habanero": {
+    "scoville": "100.000–350.000 SHU (muito picante)",
+    "descricao": "Aromática e bem ardente.",
+    "usos": ["molhos fortes", "marinadas", "salsas"],
+    "conservacao": "Refrigerar; pode congelar para molhos.",
+    "links": ["https://pt.wikipedia.org/wiki/Habanero"]
+  }
+}

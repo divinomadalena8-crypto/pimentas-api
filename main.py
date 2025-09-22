@@ -3,22 +3,52 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
 from ultralytics import YOLO
 from PIL import Image
-import io, json, time
+import io, json, time, os, requests
 
 app = FastAPI(title="API Pimentas YOLOv8m")
 
-# ====== CARREGAMENTO DO MODELO E METADADOS ======
-MODEL_PATH = "best.pt"  # coloque seu best.pt na raiz do repo
+# =========================
+# CONFIGURAÇÃO DO MODELO
+# =========================
+MODEL_PATH = "best.pt"
+
+# >>> COLE AQUI O LINK DIRETO DO SEU best.pt NO HUGGING FACE <<<
+# Ex.: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
+MODEL_URL = os.getenv(
+    "MODEL_URL",
+    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.pt"
+)
+
+def ensure_model():
+    """Baixa o best.pt se ele não existir localmente."""
+    if os.path.exists(MODEL_PATH):
+        return
+    if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
+        raise RuntimeError("MODEL_URL não definido. Cole o link do best.pt no código ou crie a variável de ambiente MODEL_URL.")
+    print(f"[init] Baixando modelo de: {MODEL_URL}")
+    with requests.get(MODEL_URL, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        with open(MODEL_PATH, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    print("[init] Download do modelo concluído.")
+
+# Baixa (se necessário) e carrega
+ensure_model()
 model = YOLO(MODEL_PATH)
 labels = model.names  # dict {id: nome}
 
+# (Opcional) carrega infos extras por variedade
 try:
     with open("pepper_info.json", "r", encoding="utf-8") as f:
         PEPPER_INFO = json.load(f)
-except:
+except Exception:
     PEPPER_INFO = {}
 
-# ====== ROTAS ======
+# =========================
+# ROTAS
+# =========================
 @app.get("/")
 def root():
     return {"status": "ok", "model": MODEL_PATH, "classes": list(labels.values())}
@@ -30,7 +60,8 @@ async def predict(file: UploadFile = File(...)):
     image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
     t0 = time.time()
-    res = model.predict(image, imgsz=640, conf=0.25, device="cpu", verbose=False)
+    # imgsz=480 deixa mais leve em plano free; ajuste se quiser
+    res = model.predict(image, imgsz=480, conf=0.25, device="cpu", verbose=False)
     elapsed = round(time.time() - t0, 3)
 
     preds = []
@@ -53,7 +84,9 @@ def pepper_info(classe: str):
         return JSONResponse({"erro": f"Sem informações para {classe}"}, status_code=404)
     return data
 
-# ====== UI MINIMALISTA PARA TESTAR (funciona no WebViewer) ======
+# =========================
+# UI mínima p/ testar (/ui)
+# =========================
 @app.get("/ui")
 def ui():
     html = """
@@ -126,3 +159,4 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
+

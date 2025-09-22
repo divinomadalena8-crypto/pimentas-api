@@ -5,26 +5,27 @@ from ultralytics import YOLO
 from PIL import Image
 import io, json, time, os, requests
 
-app = FastAPI(title="API Pimentas YOLOv8m")
+app = FastAPI(title="API Pimentas YOLOv8")
 
 # =========================
-# CONFIGURAÇÃO DO MODELO
+# CONFIG DO MODELO
 # =========================
 MODEL_PATH = "best.pt"
 
-# >>> COLE AQUI O LINK DIRETO DO SEU best.pt NO HUGGING FACE <<<
-# Ex.: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
+# COLE AQUI o link direto do seu best.pt no Hugging Face (ou defina a env var MODEL_URL no Render)
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.pt"
 )
 
 def ensure_model():
-    """Baixa o best.pt se ele não existir localmente."""
+    """Baixa o best.pt se ainda não existir localmente."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
-        raise RuntimeError("MODEL_URL não definido. Cole o link do best.pt no código ou crie a variável de ambiente MODEL_URL.")
+        raise RuntimeError(
+            "MODEL_URL não definido. Cole o link do best.pt no código ou crie a variável de ambiente MODEL_URL."
+        )
     print(f"[init] Baixando modelo de: {MODEL_URL}")
     with requests.get(MODEL_URL, stream=True, timeout=600) as r:
         r.raise_for_status()
@@ -34,12 +35,12 @@ def ensure_model():
                     f.write(chunk)
     print("[init] Download do modelo concluído.")
 
-# Baixa (se necessário) e carrega
+# Baixa (se precisar) e carrega o YOLO
 ensure_model()
 model = YOLO(MODEL_PATH)
-labels = model.names  # dict {id: nome}
+labels = model.names  # {id: nome}
 
-# (Opcional) carrega infos extras por variedade
+# (opcional) infos extras por variedade
 try:
     with open("pepper_info.json", "r", encoding="utf-8") as f:
         PEPPER_INFO = json.load(f)
@@ -51,31 +52,53 @@ except Exception:
 # =========================
 @app.get("/")
 def root():
-    return {"status": "ok", "model": MODEL_PATH, "classes": list(labels.values())}
+    # 'model.task' costuma ser "detect", "segment" ou "classify"
+    task = getattr(model, "task", None)
+    return {"status": "ok", "model": MODEL_PATH, "task": task, "classes": list(labels.values())}
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """Recebe imagem e retorna top_pred + lista completa."""
+    """Aceita imagem e retorna top_pred + lista completa (detecção OU classificação)."""
     im_bytes = await file.read()
     image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
     t0 = time.time()
-    # imgsz=480 deixa mais leve em plano free; ajuste se quiser
-    res = model.predict(image, imgsz=480, conf=0.25, device="cpu", verbose=False)
+    # imgsz 640 dá mais chance de detectar; conf 0.10 fica mais sensível
+    res = model.predict(image, imgsz=640, conf=0.10, device="cpu", verbose=False)
     elapsed = round(time.time() - t0, 3)
 
+    out = {"inference_time_s": elapsed, "task": getattr(model, "task", None)}
     preds = []
-    if res and len(res) > 0:
-        r = res[0]
+    r = res[0]
+
+    # --- CAMINHO 1: DETECÇÃO (tem caixas) ---
+    if hasattr(r, "boxes") and r.boxes is not None and len(r.boxes) > 0:
         for b in r.boxes:
-            cls_id = int(b.cls.item())
-            conf = float(b.conf.item())
+            cls_id = int(b.cls[0].item())
+            conf = float(b.conf[0].item())
             xyxy = [round(v, 2) for v in b.xyxy[0].tolist()]
             classe = labels.get(cls_id, str(cls_id))
             preds.append({"classe": classe, "conf": round(conf, 4), "bbox_xyxy": xyxy})
+        top = max(preds, key=lambda p: p["conf"]) if preds else None
+        out.update({"top_pred": top, "preds": preds})
+        return JSONResponse(out)
 
-    top = max(preds, key=lambda p: p["conf"]) if preds else None
-    return JSONResponse({"inference_time_s": elapsed, "top_pred": top, "preds": preds})
+    # --- CAMINHO 2: CLASSIFICAÇÃO (tem probs) ---
+    if hasattr(r, "probs") and r.probs is not None:
+        # top1
+        top1 = int(r.probs.top1)
+        top1conf = float(r.probs.top1conf)
+        top_pred = {"classe": labels.get(top1, str(top1)), "conf": round(top1conf, 4)}
+        # top5
+        idxs = [int(i) for i in r.probs.top5]
+        confs = [float(c) for c in r.probs.top5conf]
+        preds = [{"classe": labels.get(i, str(i)), "conf": round(c, 4)} for i, c in zip(idxs, confs)]
+        out.update({"top_pred": top_pred, "preds": preds})
+        return JSONResponse(out)
+
+    # --- fallback (nada retornado) ---
+    out.update({"top_pred": None, "preds": []})
+    return JSONResponse(out)
 
 @app.get("/pepperinfo/{classe}")
 def pepper_info(classe: str):
@@ -85,7 +108,7 @@ def pepper_info(classe: str):
     return data
 
 # =========================
-# UI mínima p/ testar (/ui)
+# UI mínima para teste (/ui)
 # =========================
 @app.get("/ui")
 def ui():
@@ -105,7 +128,7 @@ def ui():
       </style>
     </head>
     <body>
-      <h2>Classificador de Pimentas (YOLOv8m)</h2>
+      <h2>Classificador de Pimentas (YOLOv8)</h2>
       <div class="card">
         <input id="file" type="file" accept="image/*" capture="environment"/>
         <button onclick="doPredict()">Identificar</button>
@@ -144,7 +167,7 @@ def ui():
               document.getElementById('resumo').innerText =
                 'Pimenta: ' + data.top_pred.classe + '  |  Precisão: ' + pct + '%';
             } else {
-              document.getElementById('resumo').innerText = 'Nenhuma pimenta detectada.';
+              document.getElementById('resumo').innerText = 'Nenhuma pimenta identificada.';
             }
           } catch (e) {
             document.getElementById('resumo').innerText = 'Erro ao chamar a API.';
@@ -159,4 +182,3 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
-

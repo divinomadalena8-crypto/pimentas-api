@@ -23,7 +23,7 @@ app = FastAPI(title="API Pimentas YOLOv8 — Rápido")
 # Ex.: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
 MODEL_URL = os.getenv(
     "MODEL_URL",
-    "https://huggingface.co/bulipucca/pimentas-model/resolve/f704849d54bc90d866d4acceb663f6d11ed03a21/best.pt"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
+    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
 )
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
@@ -260,3 +260,4 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
+

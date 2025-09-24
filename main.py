@@ -1,7 +1,8 @@
 # main.py — YOLOv8 DETECÇÃO otimizado para Render Free (CPU)
-# Foco: baixar latência
+# Retorna SEMPRE a imagem anotada e busca baixa latência
+
 import os
-# Limita threads (evita overhead no CPU free)
+# Limita threads (evita overhead no CPU free do Render)
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -9,7 +10,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
 from ultralytics import YOLO
 from PIL import Image
-import io, time, requests, base64, json
+import io, time, requests, base64
 from typing import List
 from urllib.parse import urlparse
 import numpy as np
@@ -18,29 +19,31 @@ app = FastAPI(title="API Pimentas YOLOv8 — Rápido")
 
 # ====== CONFIG ======
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# COLE AQUI O LINK DIRETO DO SEU MODELO (.pt ou .onnx) ENTRE ASPAS
-# Exemplo: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
+# COLE AQUI o link direto do seu modelo (.pt ou .onnx) entre aspas
+# Ex.: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/f704849d54bc90d866d4acceb663f6d11ed03a21/best.pt"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
 )
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-# Nome local: pegamos do próprio URL (mantendo a extensão .pt ou .onnx)
+# Nome local do arquivo (mantém a extensão .pt/.onnx)
 MODEL_PATH = os.path.basename(urlparse(MODEL_URL).path) if MODEL_URL and not MODEL_URL.startswith("COLE_AQUI") else "best.pt"
 
-# Presets: "RAPIDO" (padrão), "EQUILIBRADO", "PRECISO", "MAX_RECALL"
-PRESET = os.getenv("PRESET", "RAPIDO")
+# Presets de inferência (pode mudar depois por variável PRESET no Render)
+# ULTRA é o mais rápido; MAX_RECALL pega casos difíceis.
+PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
+    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),   # mais rápido
     "RAPIDO":      dict(imgsz=384, conf=0.30, iou=0.50, max_det=4),
     "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=6),
     "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=8),
     "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=10),
 }
-CFG = PRESETS.get(PRESET, PRESETS["RAPIDO"])
+CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
-# Gera imagem anotada? (custa CPU/tempo). 0 = não (recomendado p/ app)
-RETURN_IMAGE = os.getenv("RETURN_IMAGE", "0") == "1"
+# SEMPRE retornar imagem anotada (como você pediu)
+RETURN_IMAGE = True
 
 def ensure_model():
     if os.path.exists(MODEL_PATH):
@@ -58,7 +61,7 @@ def ensure_model():
 
 ensure_model()
 
-# Carrega YOLO (aceita .pt e .onnx)
+# Carrega YOLO (aceita .pt e .onnx; .onnx costuma ser mais rápido em CPU)
 print(f"[init] Carregando modelo: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
 try:
@@ -139,7 +142,7 @@ async def predict(file: UploadFile = File(...)):
 
 @app.get("/ui")
 def ui():
-    # A UI comprime/redimensiona a imagem no navegador ANTES do upload
+    # Comprime/redimensiona a imagem no navegador ANTES do upload (acelera muito)
     html = f"""
     <!doctype html>
     <html>
@@ -158,8 +161,8 @@ def ui():
       </style>
     </head>
     <body>
-      <h2>Detecção de Pimentas (YOLOv8n — Rápido)</h2>
-      <small>Preset: <b>{PRESET}</b> | imgsz={{CFG['imgsz']}} | conf={{CFG['conf']}} | iou={{CFG['iou']}} | retorno_imagem={'sim' if RETURN_IMAGE else 'não'}</small>
+      <h2>Detecção de Pimentas (YOLOv8n — rápido)</h2>
+      <small>Preset: <b>{PRESET}</b> | imgsz={{CFG['imgsz']}} | conf={{CFG['conf']}} | iou={{CFG['iou']}}</small>
 
       <div class="card">
         <input id="file" type="file" accept="image/*" capture="environment"/>
@@ -173,7 +176,7 @@ def ui():
           <img id="preview"/>
         </div>
         <div class="card">
-          <h3>Anotada (se habilitada)</h3>
+          <h3>Anotada</h3>
           <img id="annotated"/>
         </div>
       </div>
@@ -184,8 +187,8 @@ def ui():
       </div>
 
       <script>
-        const MAX_DIM = 800;       // limite do lado maior antes do upload
-        const JPEG_QUALITY = 0.82; // compactação
+        const MAX_DIM = 640;       // lado maior antes do upload (mais rápido)
+        const JPEG_QUALITY = 0.80; // compactação
 
         function readFile(file) {{
           return new Promise((resolve) => {{

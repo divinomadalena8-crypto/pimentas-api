@@ -1,5 +1,5 @@
 # main.py — YOLOv8 DETECÇÃO otimizado para Render Free (CPU)
-# Foco: baixa latência
+# Foco: baixar latência
 import os
 # Limita threads (evita overhead no CPU free)
 os.environ.setdefault("OMP_NUM_THREADS", "2")
@@ -17,10 +17,17 @@ import numpy as np
 app = FastAPI(title="API Pimentas YOLOv8 — Rápido")
 
 # ====== CONFIG ======
-# Cole aqui o link do seu modelo. Pode ser .pt (PyTorch) ou .onnx (ONNXRuntime)
-MODEL_URL = os.getenv("MODEL_URL", "COLE_AQUI_O_LINK_DO_SEU_MODELO")
-# Nome local: pegamos do próprio URL (manter extensão)
-MODEL_PATH = os.path.basename(urlparse(MODEL_URL).path) if MODEL_URL and not MODEL_URL.startswith("https://huggingface.co/bulipucca/pimentas-model/resolve/f704849d54bc90d866d4acceb663f6d11ed03a21/best.pt") else "best.pt"
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# COLE AQUI O LINK DIRETO DO SEU MODELO (.pt ou .onnx) ENTRE ASPAS
+# Exemplo: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
+MODEL_URL = os.getenv(
+    "MODEL_URL",
+    "https://huggingface.co/bulipucca/pimentas-model/resolve/f704849d54bc90d866d4acceb663f6d11ed03a21/best.pt"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
+)
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+# Nome local: pegamos do próprio URL (mantendo a extensão .pt ou .onnx)
+MODEL_PATH = os.path.basename(urlparse(MODEL_URL).path) if MODEL_URL and not MODEL_URL.startswith("COLE_AQUI") else "best.pt"
 
 # Presets: "RAPIDO" (padrão), "EQUILIBRADO", "PRECISO", "MAX_RECALL"
 PRESET = os.getenv("PRESET", "RAPIDO")
@@ -32,7 +39,7 @@ PRESETS = {
 }
 CFG = PRESETS.get(PRESET, PRESETS["RAPIDO"])
 
-# Gera imagem anotada? (custa CPU e tempo). Deixe "0" para app.
+# Gera imagem anotada? (custa CPU/tempo). 0 = não (recomendado p/ app)
 RETURN_IMAGE = os.getenv("RETURN_IMAGE", "0") == "1"
 
 def ensure_model():
@@ -51,7 +58,7 @@ def ensure_model():
 
 ensure_model()
 
-# Carregamento: YOLO suporta .pt e .onnx (ONNXRuntime)
+# Carrega YOLO (aceita .pt e .onnx)
 print(f"[init] Carregando modelo: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
 try:
@@ -63,7 +70,6 @@ labels = model.names
 # ====== UTILS ======
 def to_b64_png(np_bgr: np.ndarray) -> str | None:
     try:
-        from PIL import Image
         rgb = np_bgr[:, :, ::-1]
         buf = io.BytesIO()
         Image.fromarray(rgb).save(buf, format="PNG")
@@ -133,7 +139,7 @@ async def predict(file: UploadFile = File(...)):
 
 @app.get("/ui")
 def ui():
-    # A UI abaixo redimensiona e comprime a imagem no navegador ANTES de enviar (muito mais rápido).
+    # A UI comprime/redimensiona a imagem no navegador ANTES do upload
     html = f"""
     <!doctype html>
     <html>
@@ -178,7 +184,7 @@ def ui():
       </div>
 
       <script>
-        const MAX_DIM = 800;      // limite do lado maior antes do upload (reduz MUITO o tempo)
+        const MAX_DIM = 800;       // limite do lado maior antes do upload
         const JPEG_QUALITY = 0.82; // compactação
 
         function readFile(file) {{

@@ -1,29 +1,26 @@
-# main.py — YOLOv8 DETECÇÃO otimizado p/ Render Free (CPU)
+# main.py — YOLOv8 DETECÇÃO (Render Free / CPU) com tratamento de erro
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
 from ultralytics import YOLO
 from PIL import Image
 import io, json, time, os, requests, base64
+from typing import List
 
 app = FastAPI(title="API Pimentas YOLOv8 — Detecção")
 
-# ========= CONFIG =========
+# ====== CONFIG ======
 MODEL_PATH = "best.pt"
 MODEL_URL = os.getenv(
     "MODEL_URL",
-    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.pt"
+    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.pt"   # <-- COLE o link do HF aqui
 )
 
-# Escolha UM preset (troque a string abaixo): "RAPIDO", "EQUILIBRADO", "PRECISO"
+# Preset de velocidade/precisão (ou defina PRESET no Render)
 PRESET = os.getenv("PRESET", "EQUILIBRADO")
-
 PRESETS = {
-    # mais rápido (menos acurácia)
-    "RAPIDO":     dict(imgsz=416, conf=0.35, iou=0.50, max_det=5),
-    # bom compromisso
-    "EQUILIBRADO":dict(imgsz=448, conf=0.35, iou=0.50, max_det=5),
-    # mais acurácia (um pouco mais lento)
-    "PRECISO":    dict(imgsz=512, conf=0.40, iou=0.55, max_det=8),
+    "RAPIDO":      dict(imgsz=416, conf=0.35, iou=0.50, max_det=5),
+    "EQUILIBRADO": dict(imgsz=448, conf=0.35, iou=0.50, max_det=5),
+    "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=8),
 }
 CFG = PRESETS.get(PRESET, PRESETS["EQUILIBRADO"])
 
@@ -43,82 +40,89 @@ def ensure_model():
 
 ensure_model()
 model = YOLO(MODEL_PATH)
-# pequenos ganhos de latência
 try:
-    model.fuse()
+    model.fuse()  # pequeno ganho
 except Exception:
     pass
-
 labels = model.names  # {id: nome}
 
-# ========= ROTAS =========
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "task": getattr(model, "task", None),
-        "preset": PRESET,
-        "cfg": CFG,
-        "classes": list(labels.values())
-    }
+    return {"status": "ok", "task": getattr(model, "task", None), "preset": PRESET, "cfg": CFG, "classes": list(labels.values())}
+
+def _encode_image(np_bgr) -> str:
+    """Converte numpy BGR para PNG base64 data URI."""
+    try:
+        rgb = np_bgr[:, :, ::-1]
+        buf = io.BytesIO()
+        Image.fromarray(rgb).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """Detecção com imagem anotada (base64)"""
-    im_bytes = await file.read()
-    image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
-
+    """Detecção robusta com imagem anotada; retorna JSON mesmo em erro."""
     t0 = time.time()
-    res = model.predict(
-        image,
-        imgsz=CFG["imgsz"],
-        conf=CFG["conf"],
-        iou=CFG["iou"],
-        max_det=CFG["max_det"],
-        device="cpu",
-        verbose=False
-    )
-    elapsed = round(time.time() - t0, 3)
+    try:
+        im_bytes = await file.read()
+        image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
-    r = res[0]
-    preds = []
+        res = model.predict(
+            image,
+            imgsz=CFG["imgsz"],
+            conf=CFG["conf"],
+            iou=CFG["iou"],
+            max_det=CFG["max_det"],
+            device="cpu",
+            verbose=False
+        )
+        r = res[0]
+        preds: List[dict] = []
 
-    if r.boxes is not None and len(r.boxes) > 0:
-        for b in r.boxes:
-            cls_id = int(b.cls[0].item()) if getattr(b.cls, "ndim", 0) else int(b.cls.item())
-            conf = float(b.conf[0].item()) if getattr(b.conf, "ndim", 0) else float(b.conf.item())
-            xyxy = [round(v, 2) for v in r.boxes.xyxy[0].tolist()]
-            classe = labels.get(cls_id, str(cls_id))
-            preds.append({"classe": classe, "conf": round(conf, 4), "bbox_xyxy": xyxy})
+        # >>> leitura robusta dos tensores (evita erro de shape)
+        if r.boxes is not None and len(r.boxes) > 0:
+            xyxy = r.boxes.xyxy.cpu().numpy().tolist()
+            cls  = r.boxes.cls.cpu().numpy().astype(int).tolist()
+            conf = r.boxes.conf.cpu().numpy().tolist()
+            for (x1, y1, x2, y2), c, cf in zip(xyxy, cls, conf):
+                preds.append({
+                    "classe": labels.get(int(c), str(int(c))),
+                    "conf": round(float(cf), 4),
+                    "bbox_xyxy": [round(x1,2), round(y1,2), round(x2,2), round(y2,2)]
+                })
 
-        # imagem anotada
-        annotated = r.plot()              # numpy (BGR)
-        annotated_rgb = annotated[:, :, ::-1]
-        buf = io.BytesIO()
-        Image.fromarray(annotated_rgb).save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        img_b64 = f"data:image/png;base64,{b64}"
+            annotated = r.plot()  # numpy BGR
+            img_b64 = _encode_image(annotated)
+            top = max(preds, key=lambda p: p["conf"]) if preds else None
+            return JSONResponse({
+                "ok": True,
+                "inference_time_s": round(time.time() - t0, 3),
+                "task": "detect",
+                "num_dets": len(preds),
+                "top_pred": top,
+                "preds": preds,
+                "image_b64": img_b64
+            })
 
-        top = max(preds, key=lambda p: p["conf"])
-        print(f"[infer] {len(preds)} detecções | top={top}")
+        # sem detecções
         return JSONResponse({
-            "inference_time_s": elapsed,
+            "ok": True,
+            "inference_time_s": round(time.time() - t0, 3),
             "task": "detect",
-            "num_dets": len(preds),
-            "top_pred": top,
-            "preds": preds,
-            "image_b64": img_b64
+            "num_dets": 0,
+            "top_pred": None,
+            "preds": [],
+            "image_b64": None
         })
 
-    print("[infer] 0 detecções")
-    return JSONResponse({
-        "inference_time_s": elapsed,
-        "task": "detect",
-        "num_dets": 0,
-        "top_pred": None,
-        "preds": [],
-        "image_b64": None
-    })
+    except Exception as e:
+        # nunca quebrar a UI: devolve erro explicando
+        return JSONResponse({
+            "ok": False,
+            "error": str(e),
+            "inference_time_s": round(time.time() - t0, 3)
+        }, status_code=200)
 
 @app.get("/ui")
 def ui():
@@ -141,7 +145,7 @@ def ui():
     </head>
     <body>
       <h2>Detecção de Pimentas (YOLOv8)</h2>
-      <small>Preset atual: <b>{PRESET}</b> | imgsz={CFG['imgsz']} | conf={CFG['conf']} | iou={CFG['iou']}</small>
+      <small>Preset: <b>{PRESET}</b> | imgsz={CFG['imgsz']} | conf={CFG['conf']} | iou={CFG['iou']}</small>
 
       <div class="card">
         <input id="file" type="file" accept="image/*" capture="environment"/>
@@ -167,8 +171,7 @@ def ui():
 
       <script>
         function showPreview(file) {{
-          const img = document.getElementById('preview');
-          img.src = URL.createObjectURL(file);
+          document.getElementById('preview').src = URL.createObjectURL(file);
         }}
 
         async function doPredict() {{
@@ -185,12 +188,17 @@ def ui():
             document.getElementById('json').innerText = JSON.stringify(data, null, 2);
             if (data.image_b64) document.getElementById('annotated').src = data.image_b64;
 
+            if (data.ok === false) {{
+              document.getElementById('resumo').innerText = 'Erro: ' + (data.error || 'desconhecido');
+              return;
+            }}
+
             if (data.top_pred) {{
               const pct = Math.round(data.top_pred.conf * 100);
               document.getElementById('resumo').innerText =
                 'Detectou: ' + data.top_pred.classe + ' | Confiança: ' + pct + '% | Caixas: ' + data.num_dets;
             }} else {{
-              document.getElementById('resumo').innerText = 'Nenhuma pimenta detectada (tente aproximar/centralizar).';
+              document.getElementById('resumo').innerText = 'Nenhuma pimenta detectada.';
             }}
           }} catch (e) {{
             document.getElementById('resumo').innerText = 'Erro ao chamar a API.';

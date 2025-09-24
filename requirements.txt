@@ -1,18 +1,15 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-# PyTorch CPU (Py 3.13)
-torch==2.8.0+cpu
-
-# Ultralytics + deps headless
 ultralytics==8.3.0
+onnxruntime==1.18.0
 opencv-python-headless==4.10.0.84
-pillow==10.4.0
-numpy==1.26.4
-
-# API
+pillow
+numpy
 fastapi==0.112.2
 uvicorn[standard]==0.30.6
-python-multipart==0.0.9
+requests
+
+
 
 
 

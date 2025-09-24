@@ -1,37 +1,40 @@
-# main.py — YOLOv8 DETECÇÃO otimizado para Render Free (CPU)
-# Retorna SEMPRE a imagem anotada e busca baixa latência
+# main.py — YOLOv8 (detecção) para Render Free
+# - Uvicorn sobe rápido; modelo baixa/carrega em background (evita 502)
+# - Sempre retorna imagem anotada
+# - Salva PNG em /static/annotated e devolve image_url
+# - Suporte a HF_TOKEN para repositório privado (Hugging Face)
 
-import os
-# Limita threads (evita overhead no CPU free do Render)
+import os, io, time, threading, base64, requests, uuid
+from typing import List
+from urllib.parse import urlparse
+
+# Reduz overhead de threads BLAS no CPU free
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 from PIL import Image
-import io, time, requests, base64
-from typing import List
-from urllib.parse import urlparse
 import numpy as np
 
-app = FastAPI(title="API Pimentas YOLOv8 — Rápido")
+app = FastAPI(title="API Pimentas YOLOv8")
 
-# ====== CONFIG ======
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# COLE AQUI o link direto do seu modelo (.pt ou .onnx) entre aspas
-# Ex.: "https://huggingface.co/SEU_USUARIO/pimentas-model/resolve/main/best.pt"
+# ===================== CONFIG =====================
+
+# <<< COLE AQUI O LINK DO SEU MODELO (.pt ou .onnx) >>>
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
 )
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+MODEL_PATH = (
+    os.path.basename(urlparse(MODEL_URL).path)
+    if MODEL_URL and not MODEL_URL.startswith("COLE_AQUI")
+    else "best.pt"
+)
 
-# Nome local do arquivo (mantém a extensão .pt/.onnx)
-MODEL_PATH = os.path.basename(urlparse(MODEL_URL).path) if MODEL_URL and not MODEL_URL.startswith("COLE_AQUI") else "best.pt"
-
-# Presets de inferência (pode mudar depois por variável PRESET no Render)
-# ULTRA é o mais rápido; MAX_RECALL pega casos difíceis.
+# Presets
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
     "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),   # mais rápido
@@ -42,16 +45,36 @@ PRESETS = {
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
-# SEMPRE retornar imagem anotada (como você pediu)
+# Sempre devolver imagem anotada
 RETURN_IMAGE = True
 
-def ensure_model():
+# Suporte a repo privado (opcional)
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
+REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+
+# Pasta estática para salvar PNG anotado
+STATIC_DIR = os.path.join(os.getcwd(), "static")
+ANNOT_DIR = os.path.join(STATIC_DIR, "annotated")
+os.makedirs(ANNOT_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# ===================== ESTADO GLOBAL =====================
+
+model = None
+labels = {}
+READY = False
+LOAD_ERR = None
+
+# ===================== FUNÇÕES AUX =====================
+
+def ensure_model_file():
+    """Baixa o arquivo do modelo se não existir localmente (stream)."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
         raise RuntimeError("Defina MODEL_URL com link direto do modelo (.pt ou .onnx).")
     print(f"[init] Baixando modelo: {MODEL_URL}")
-    with requests.get(MODEL_URL, stream=True, timeout=600) as r:
+    with requests.get(MODEL_URL, headers=REQ_HEADERS, stream=True, timeout=600) as r:
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
@@ -59,18 +82,28 @@ def ensure_model():
                     f.write(chunk)
     print("[init] Download concluído:", MODEL_PATH)
 
-ensure_model()
 
-# Carrega YOLO (aceita .pt e .onnx; .onnx costuma ser mais rápido em CPU)
-print(f"[init] Carregando modelo: {MODEL_PATH}")
-model = YOLO(MODEL_PATH)
-try:
-    model.fuse()  # pequeno ganho
-except Exception:
-    pass
-labels = model.names
+def background_load():
+    """Thread: baixa e carrega YOLO; marca READY ao final."""
+    global model, labels, READY, LOAD_ERR
+    try:
+        t0 = time.time()
+        ensure_model_file()
+        m = YOLO(MODEL_PATH)
+        try:
+            m.fuse()
+        except Exception:
+            pass
+        model = m
+        labels = m.names
+        READY = True
+        print(f"[init] Modelo pronto em {time.time() - t0:.1f}s")
+    except Exception as e:
+        LOAD_ERR = str(e)
+        READY = False
+        print("[init] ERRO ao carregar modelo:", LOAD_ERR)
 
-# ====== UTILS ======
+
 def to_b64_png(np_bgr: np.ndarray) -> str | None:
     try:
         rgb = np_bgr[:, :, ::-1]
@@ -80,12 +113,33 @@ def to_b64_png(np_bgr: np.ndarray) -> str | None:
     except Exception:
         return None
 
+# ===================== LIFECYCLE =====================
+
+@app.on_event("startup")
+def on_startup():
+    threading.Thread(target=background_load, daemon=True).start()
+
+# ===================== ROTAS =====================
+
 @app.get("/")
-def root():
-    return {"status": "ok", "preset": PRESET, "cfg": CFG, "model": MODEL_PATH, "classes": list(labels.values())}
+def health():
+    return {
+        "status": "ok" if READY else "warming",
+        "ready": READY,
+        "error": LOAD_ERR,
+        "preset": PRESET,
+        "cfg": CFG,
+        "model": MODEL_PATH if MODEL_PATH else None,
+        "classes": list(labels.values()) if READY else None,
+    }
+
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    if not READY:
+        # serviço no ar, mas modelo ainda aquecendo
+        return JSONResponse({"ok": False, "warming_up": True, "error": LOAD_ERR}, status_code=503)
+
     t0 = time.time()
     try:
         im_bytes = await file.read()
@@ -114,10 +168,21 @@ async def predict(file: UploadFile = File(...)):
                     "bbox_xyxy": [round(x1,2), round(y1,2), round(x2,2), round(y2,2)]
                 })
 
-            img_b64 = None
+            image_b64 = None
+            image_url = None
+
             if RETURN_IMAGE:
-                annotated = r.plot()  # numpy BGR
-                img_b64 = to_b64_png(annotated)
+                # annotated = np.ndarray (BGR)
+                annotated = r.plot()
+
+                # Salva PNG e devolve URL
+                fname = f"{uuid.uuid4().hex}.png"
+                fpath = os.path.join(ANNOT_DIR, fname)
+                Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # converte BGR->RGB
+                image_url = f"/static/annotated/{fname}"
+
+                # (opcional) também em base64
+                image_b64 = to_b64_png(annotated)
 
             top = max(preds, key=lambda p: p["conf"]) if preds else None
             return JSONResponse({
@@ -126,53 +191,58 @@ async def predict(file: UploadFile = File(...)):
                 "num_dets": len(preds),
                 "top_pred": top,
                 "preds": preds,
-                "image_b64": img_b64
+                "image_b64": image_b64,
+                "image_url": image_url
             })
 
+        # Sem detecções
         return JSONResponse({
             "ok": True,
             "inference_time_s": round(time.time() - t0, 3),
             "num_dets": 0,
             "top_pred": None,
             "preds": [],
-            "image_b64": None
+            "image_b64": None,
+            "image_url": None
         })
+
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
 
+
 @app.get("/ui")
 def ui():
-    # Comprime/redimensiona a imagem no navegador ANTES do upload (acelera muito)
+    # UI aguarda "ready" e usa image_url para exibir a anotada
     html = f"""
     <!doctype html>
     <html>
     <head>
       <meta charset="utf-8"/>
       <meta name="viewport" content="width=device-width, initial-scale=1"/>
-      <title>Detecção de Pimentas (Rápido)</title>
+      <title>Detecção de Pimentas</title>
       <style>
-        body {{ font-family: Arial, sans-serif; padding:16px; max-width:800px; margin:auto; }}
+        body {{ font-family: Arial, sans-serif; padding:16px; max-width:820px; margin:auto; }}
         .row {{ display:flex; gap:16px; flex-wrap:wrap; }}
-        .card {{ flex:1 1 360px; border:1px solid #ddd; border-radius:12px; padding:16px; }}
+        .card {{ flex:1 1 380px; border:1px solid #ddd; border-radius:12px; padding:16px; }}
         img {{ max-width:100%; border-radius:12px; }}
         button {{ padding:10px 16px; border-radius:10px; border:1px solid #ccc; background:#f8f8f8; cursor:pointer; }}
         pre {{ background:#f4f4f4; padding:12px; border-radius:8px; overflow:auto; }}
-        small {{ color:#666; }}
+        #status {{ margin:6px 0; }}
       </style>
     </head>
     <body>
-      <h2>Detecção de Pimentas (YOLOv8n — rápido)</h2>
-      <small>Preset: <b>{PRESET}</b> | imgsz={{CFG['imgsz']}} | conf={{CFG['conf']}} | iou={{CFG['iou']}}</small>
+      <h2>Detecção de Pimentas (YOLOv8)</h2>
+      <div id="status">Carregando modelo...</div>
 
       <div class="card">
-        <input id="file" type="file" accept="image/*" capture="environment"/>
-        <button onclick="doPredict()">Identificar</button>
+        <input id="file" type="file" accept="image/*" capture="environment" disabled/>
+        <button id="btn" disabled onclick="doPredict()">Identificar</button>
         <p id="resumo"></p>
       </div>
 
       <div class="row">
         <div class="card">
-          <h3>Prévia (compactada)</h3>
+          <h3>Prévia</h3>
           <img id="preview"/>
         </div>
         <div class="card">
@@ -187,8 +257,28 @@ def ui():
       </div>
 
       <script>
-        const MAX_DIM = 640;       // lado maior antes do upload (mais rápido)
-        const JPEG_QUALITY = 0.80; // compactação
+        const MAX_DIM = 640, JPEG_QUALITY = 0.8;
+        const BASE = window.location.origin;
+
+        async function waitReady() {{
+          while (true) {{
+            try {{
+              const r = await fetch('/', {{cache: 'no-store'}});
+              const d = await r.json();
+              if (d.ready) {{
+                document.getElementById('status').innerText = 'Modelo pronto ✅';
+                document.getElementById('file').disabled = false;
+                document.getElementById('btn').disabled = false;
+                break;
+              }} else {{
+                document.getElementById('status').innerText = 'Aquecendo modelo...';
+              }}
+            }} catch (e) {{
+              document.getElementById('status').innerText = 'Conectando...';
+            }}
+            await new Promise(res => setTimeout(res, 1000));
+          }}
+        }}
 
         function readFile(file) {{
           return new Promise((resolve) => {{
@@ -200,35 +290,29 @@ def ui():
 
         async function compressImage(file) {{
           const dataUrl = await readFile(file);
-          const img = new Image();
-          img.src = dataUrl;
-          await img.decode();
-
+          const img = new Image(); img.src = dataUrl; await img.decode();
           let w = img.width, h = img.height;
           const scale = Math.min(1, MAX_DIM / Math.max(w, h));
           w = Math.round(w * scale); h = Math.round(h * scale);
-
           const canvas = document.createElement('canvas');
           canvas.width = w; canvas.height = h;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, w, h);
-
           return new Promise((resolve) => {{
             canvas.toBlob((blob) => resolve(blob), 'image/jpeg', JPEG_QUALITY);
           }});
         }}
 
-        function showPreviewFromBlob(blob) {{
-          const url = URL.createObjectURL(blob);
-          document.getElementById('preview').src = url;
+        function showPreview(blob) {{
+          document.getElementById('preview').src = URL.createObjectURL(blob);
         }}
 
         async function doPredict() {{
           const f = document.getElementById('file').files[0];
           if (!f) {{ alert('Escolha uma imagem.'); return; }}
-          document.getElementById('resumo').innerText = 'Compactando imagem...';
+          document.getElementById('resumo').innerText = 'Compactando...';
           const blob = await compressImage(f);
-          showPreviewFromBlob(blob);
+          showPreview(blob);
 
           const fd = new FormData();
           fd.append('file', blob, 'photo.jpg');
@@ -238,26 +322,39 @@ def ui():
             const r = await fetch('/predict', {{ method: 'POST', body: fd }});
             const data = await r.json();
             document.getElementById('json').innerText = JSON.stringify(data, null, 2);
-            if (data.image_b64) document.getElementById('annotated').src = data.image_b64;
 
+            if (data.ok === false && data.warming_up) {{
+              document.getElementById('resumo').innerText = 'Aquecendo modelo... tente novamente em instantes.';
+              return;
+            }}
             if (data.ok === false) {{
               document.getElementById('resumo').innerText = 'Erro: ' + (data.error || 'desconhecido');
               return;
             }}
 
+            // Imagem anotada por URL (preferida)
+            if (data.image_url) {{
+              document.getElementById('annotated').src = BASE + data.image_url;
+            }} else if (data.image_b64) {{
+              document.getElementById('annotated').src = data.image_b64;
+            }}
+
             if (data.top_pred) {{
               const pct = Math.round(data.top_pred.conf * 100);
-              document.getElementById('resumo').innerText = 'Detectou: ' + data.top_pred.classe + ' | ' + pct + '% | caixas: ' + data.num_dets;
+              document.getElementById('resumo').innerText = 'Detectou: ' + data.top_pred.classe +
+                ' | ' + pct + '% | Caixas: ' + data.num_dets + ' | ' +
+                data.inference_time_s + ' s';
             }} else {{
-              document.getElementById('resumo').innerText = 'Nenhuma pimenta detectada.';
+              document.getElementById('resumo').innerText = 'Nenhuma pimenta detectada. (' + data.inference_time_s + ' s)';
             }}
           }} catch (e) {{
-            document.getElementById('resumo').innerText = 'Erro ao chamar a API.';
+            document.getElementById('resumo').innerText = 'Falha ao chamar a API.';
           }}
         }}
+
+        waitReady();
       </script>
     </body>
     </html>
     """
     return HTMLResponse(content=html)
-

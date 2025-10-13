@@ -210,6 +210,29 @@ async def predict(file: UploadFile = File(...)):
         return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
 
 
+@app.get("/warmup")
+def warmup():
+    """Bloqueia até READY ou 90s, e roda 1 inferência curtinha para compilar o caminho."""
+    t0 = time.time()
+    while not READY and time.time() - t0 < 90:
+        time.sleep(0.5)
+
+    if not READY:
+        return {"ok": False, "warming_up": True}
+
+    # imagem 64x64 branca só para aquecer
+    img = Image.new("RGB", (64, 64), (255, 255, 255))
+    _ = model.predict(
+        img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
+        max_det=1, device="cpu", verbose=False
+    )
+    return {"ok": True}
+
+
+
+
+
+
 @app.get("/ui")
 def ui():
     # UI aguarda "ready" e usa image_url para exibir a anotada
@@ -358,3 +381,4 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
+

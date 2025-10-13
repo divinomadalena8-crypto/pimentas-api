@@ -145,6 +145,9 @@ async def predict(file: UploadFile = File(...)):
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
+        # ADICIONADO: reduz o maior lado para 1024 px (acelera em CPU, mantém proporção)
+        image.thumbnail((1024, 1024))  # in-place; não retorna nada
+
         res = model.predict(
             image,
             imgsz=CFG["imgsz"],
@@ -227,10 +230,6 @@ def warmup():
         max_det=1, device="cpu", verbose=False
     )
     return {"ok": True}
-
-
-
-
 
 
 @app.get("/ui")
@@ -381,4 +380,3 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
-

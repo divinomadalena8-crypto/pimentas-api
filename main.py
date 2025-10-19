@@ -84,7 +84,7 @@ def ensure_model_file():
 
 
 def background_load():
-    """Thread: baixa e carrega YOLO; marca READY ao final."""
+    """Baixa e carrega YOLO; faz uma inferência curta; marca READY ao final."""
     global model, labels, READY, LOAD_ERR
     try:
         t0 = time.time()
@@ -94,6 +94,15 @@ def background_load():
             m.fuse()
         except Exception:
             pass
+
+        # WARM-UP: 1 inferência rapidinha em imagem 64x64
+        try:
+            img = Image.new("RGB", (64, 64), (255, 255, 255))
+            _ = m.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
+                          max_det=1, device="cpu", verbose=False)
+        except Exception:
+            pass
+
         model = m
         labels = m.names
         READY = True
@@ -103,15 +112,6 @@ def background_load():
         READY = False
         print("[init] ERRO ao carregar modelo:", LOAD_ERR)
 
-
-def to_b64_png(np_bgr: np.ndarray) -> str | None:
-    try:
-        rgb = np_bgr[:, :, ::-1]
-        buf = io.BytesIO()
-        Image.fromarray(rgb).save(buf, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception:
-        return None
 
 # ===================== LIFECYCLE =====================
 
@@ -380,3 +380,4 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
+

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from fastapi import FastAPI, UploadFile, File, Response
+from fastapi import FastAPI, UploadFile, File, Response, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
@@ -104,7 +104,6 @@ def background_load():
             m.fuse()
         except Exception:
             pass
-        # Só marca pronto depois de carregar
         model = m
         labels = m.names
         READY = True
@@ -140,7 +139,7 @@ def health_head():
     return Response(status_code=200)
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...), request: Request = None):
     if not READY:
         # serviço no ar, mas modelo ainda aquecendo
         return JSONResponse({"ok": False, "warming_up": True, "error": LOAD_ERR}, status_code=503)
@@ -182,11 +181,17 @@ async def predict(file: UploadFile = File(...)):
             if RETURN_IMAGE:
                 # annotated = np.ndarray (BGR)
                 annotated = r.plot()
-                # Salva PNG e devolve URL
+                # Salva PNG e devolve URL absoluta
                 fname = f"{uuid.uuid4().hex}.png"
                 fpath = os.path.join(ANNOT_DIR, fname)
                 Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
-                image_url = f"/static/annotated/{fname}"
+
+                if request is not None:
+                    base = str(request.base_url).rstrip("/")  # ex: https://pimentas-api.onrender.com
+                    image_url = f"{base}/static/annotated/{fname}"
+                else:
+                    image_url = f"/static/annotated/{fname}"
+
                 # (opcional) também em base64
                 image_b64 = to_b64_png(annotated)
 
@@ -235,7 +240,7 @@ def warmup():
 
 @app.get("/ui")
 def ui():
-    # UI aguarda "ready" e usa image_url para exibir a anotada
+    # UI aguarda "ready" e usa image_b64 (preferido) ou image_url
     html = f"""
     <!doctype html>
     <html>
@@ -281,7 +286,6 @@ def ui():
 
       <script>
         const MAX_DIM = 640, JPEG_QUALITY = 0.8;
-        const BASE = window.location.origin;
 
         async function waitReady() {{
           while (true) {{
@@ -355,11 +359,11 @@ def ui():
               return;
             }}
 
-            // Imagem anotada por URL (preferida)
-            if (data.image_url) {{
-              document.getElementById('annotated').src = BASE + data.image_url;
-            }} else if (data.image_b64) {{
+            // Preferir base64; se não houver, usar URL absoluta
+            if (data.image_b64) {{
               document.getElementById('annotated').src = data.image_b64;
+            }} else if (data.image_url) {{
+              document.getElementById('annotated').src = data.image_url;
             }}
 
             if (data.top_pred) {{

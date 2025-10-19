@@ -1,7 +1,7 @@
 # main.py — YOLOv8 (detecção) para Render Free
 # - Uvicorn sobe rápido; modelo baixa/carrega em background (evita 502)
 # - Sempre retorna imagem anotada (opcional via RETURN_IMAGE)
-# - Salva PNG em /static/annotated e devolve image_url
+# - Salva PNG em /static/annotated e devolve image_url (RELATIVA)
 # - Suporte a HF_TOKEN para repositório privado (Hugging Face)
 
 import os, io, time, threading, base64, requests, uuid
@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from fastapi import FastAPI, UploadFile, File, Response, Request
+from fastapi import FastAPI, UploadFile, File, Response
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
@@ -23,10 +23,9 @@ app = FastAPI(title="API Pimentas YOLOv8")
 
 # ===================== CONFIG =====================
 
-# <<< COLE AQUI O LINK DO SEU MODELO (.pt ou .onnx) >>>
 MODEL_URL = os.getenv(
     "MODEL_URL",
-    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"  # <<< COLE AQUI O LINK DO SEU MODELO >>>
+    "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"
 )
 MODEL_PATH = (
     os.path.basename(urlparse(MODEL_URL).path)
@@ -34,10 +33,9 @@ MODEL_PATH = (
     else "best.pt"
 )
 
-# Presets
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
-    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),   # mais rápido
+    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),
     "RAPIDO":      dict(imgsz=384, conf=0.30, iou=0.50, max_det=4),
     "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=6),
     "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=8),
@@ -45,16 +43,13 @@ PRESETS = {
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
-# Sempre devolver imagem anotada (mude para False se não precisar da PNG/URL)
 RETURN_IMAGE = True
 
-# Suporte a repo privado (opcional)
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-# Pasta estática para salvar PNG anotado
 STATIC_DIR = os.path.join(os.getcwd(), "static")
-ANNOT_DIR = os.path.join(STATIC_DIR, "annotated")
+ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
 os.makedirs(ANNOT_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -65,10 +60,9 @@ labels = {}
 READY = False
 LOAD_ERR = None
 
-# ===================== FUNÇÕES AUX =====================
+# ===================== AUX =====================
 
 def ensure_model_file():
-    """Baixa o arquivo do modelo se não existir localmente (stream)."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
@@ -82,7 +76,6 @@ def ensure_model_file():
                     f.write(chunk)
     print("[init] Download concluído:", MODEL_PATH)
 
-
 def to_b64_png(np_bgr: np.ndarray) -> str | None:
     try:
         rgb = np_bgr[:, :, ::-1]
@@ -92,9 +85,8 @@ def to_b64_png(np_bgr: np.ndarray) -> str | None:
     except Exception:
         return None
 
-
 def background_load():
-    """Baixa e carrega YOLO; marca READY ao final (sem inferência de warm-up aqui)."""
+    """Carrega YOLO e marca READY (sem inferência aqui para não travar startup)."""
     global model, labels, READY, LOAD_ERR
     try:
         t0 = time.time()
@@ -135,13 +127,11 @@ def health():
 
 @app.head("/")
 def health_head():
-    # Alguns provedores fazem health-check com HEAD
     return Response(status_code=200)
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...), request: Request = None):
+async def predict(file: UploadFile = File(...)):
     if not READY:
-        # serviço no ar, mas modelo ainda aquecendo
         return JSONResponse({"ok": False, "warming_up": True, "error": LOAD_ERR}, status_code=503)
 
     t0 = time.time()
@@ -149,7 +139,7 @@ async def predict(file: UploadFile = File(...), request: Request = None):
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
-        # Reduz o maior lado para 1024 px (acelera em CPU; mantém proporção)
+        # ↓ acelera em CPU, mantém proporção
         image.thumbnail((1024, 1024))  # in-place
 
         res = model.predict(
@@ -179,20 +169,14 @@ async def predict(file: UploadFile = File(...), request: Request = None):
             image_url = None
 
             if RETURN_IMAGE:
-                # annotated = np.ndarray (BGR)
-                annotated = r.plot()
-                # Salva PNG e devolve URL absoluta
+                annotated = r.plot()  # np.ndarray (BGR)
+                # salva arquivo
                 fname = f"{uuid.uuid4().hex}.png"
                 fpath = os.path.join(ANNOT_DIR, fname)
                 Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
-
-                if request is not None:
-                    base = str(request.base_url).rstrip("/")  # ex: https://pimentas-api.onrender.com
-                    image_url = f"{base}/static/annotated/{fname}"
-                else:
-                    image_url = f"/static/annotated/{fname}"
-
-                # (opcional) também em base64
+                # URL RELATIVA (evita mixed content)
+                image_url = f"/static/annotated/{fname}"
+                # também em base64 (fallback imediato)
                 image_b64 = to_b64_png(annotated)
 
             top = max(preds, key=lambda p: p["conf"]) if preds else None
@@ -206,7 +190,6 @@ async def predict(file: UploadFile = File(...), request: Request = None):
                 "image_url": image_url
             })
 
-        # Sem detecções
         return JSONResponse({
             "ok": True,
             "inference_time_s": round(time.time() - t0, 3),
@@ -222,25 +205,20 @@ async def predict(file: UploadFile = File(...), request: Request = None):
 
 @app.get("/warmup")
 def warmup():
-    """Bloqueia até READY ou 90s, e roda 1 inferência curtinha para compilar o caminho."""
+    """Espera READY e roda 1 inferência curtinha (compila caminho)."""
     t0 = time.time()
     while not READY and time.time() - t0 < 90:
         time.sleep(0.5)
-
     if not READY:
         return {"ok": False, "warming_up": True}
-
-    # imagem 64x64 branca só para aquecer
     img = Image.new("RGB", (64, 64), (255, 255, 255))
-    _ = model.predict(
-        img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
-        max_det=1, device="cpu", verbose=False
-    )
+    _ = model.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
+                      max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
 @app.get("/ui")
 def ui():
-    # UI aguarda "ready" e usa image_b64 (preferido) ou image_url
+    # Prefere base64; se não houver, usa URL relativa com origin do navegador
     html = f"""
     <!doctype html>
     <html>
@@ -359,11 +337,14 @@ def ui():
               return;
             }}
 
-            // Preferir base64; se não houver, usar URL absoluta
+            // Prefere base64; se não houver, usa URL relativa com origin
             if (data.image_b64) {{
               document.getElementById('annotated').src = data.image_b64;
             }} else if (data.image_url) {{
-              document.getElementById('annotated').src = data.image_url;
+              const url = data.image_url.startsWith('http')
+                ? data.image_url
+                : (window.location.origin + data.image_url);
+              document.getElementById('annotated').src = url;
             }}
 
             if (data.top_pred) {{

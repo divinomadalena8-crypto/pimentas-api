@@ -1,6 +1,6 @@
 # main.py — YOLOv8 (detecção) para Render Free
 # - Uvicorn sobe rápido; modelo baixa/carrega em background (evita 502)
-# - Sempre retorna imagem anotada
+# - Sempre retorna imagem anotada (opcional via RETURN_IMAGE)
 # - Salva PNG em /static/annotated e devolve image_url
 # - Suporte a HF_TOKEN para repositório privado (Hugging Face)
 
@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Response
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
@@ -45,7 +45,7 @@ PRESETS = {
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
-# Sempre devolver imagem anotada
+# Sempre devolver imagem anotada (mude para False se não precisar da PNG/URL)
 RETURN_IMAGE = True
 
 # Suporte a repo privado (opcional)
@@ -83,8 +83,18 @@ def ensure_model_file():
     print("[init] Download concluído:", MODEL_PATH)
 
 
+def to_b64_png(np_bgr: np.ndarray) -> str | None:
+    try:
+        rgb = np_bgr[:, :, ::-1]
+        buf = io.BytesIO()
+        Image.fromarray(rgb).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
 def background_load():
-    """Baixa e carrega YOLO; faz uma inferência curta; marca READY ao final."""
+    """Baixa e carrega YOLO; marca READY ao final (sem inferência de warm-up aqui)."""
     global model, labels, READY, LOAD_ERR
     try:
         t0 = time.time()
@@ -94,15 +104,7 @@ def background_load():
             m.fuse()
         except Exception:
             pass
-
-        # WARM-UP: 1 inferência rapidinha em imagem 64x64
-        try:
-            img = Image.new("RGB", (64, 64), (255, 255, 255))
-            _ = m.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
-                          max_det=1, device="cpu", verbose=False)
-        except Exception:
-            pass
-
+        # Só marca pronto depois de carregar
         model = m
         labels = m.names
         READY = True
@@ -111,7 +113,6 @@ def background_load():
         LOAD_ERR = str(e)
         READY = False
         print("[init] ERRO ao carregar modelo:", LOAD_ERR)
-
 
 # ===================== LIFECYCLE =====================
 
@@ -133,6 +134,10 @@ def health():
         "classes": list(labels.values()) if READY else None,
     }
 
+@app.head("/")
+def health_head():
+    # Alguns provedores fazem health-check com HEAD
+    return Response(status_code=200)
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
@@ -145,8 +150,8 @@ async def predict(file: UploadFile = File(...)):
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
 
-        # ADICIONADO: reduz o maior lado para 1024 px (acelera em CPU, mantém proporção)
-        image.thumbnail((1024, 1024))  # in-place; não retorna nada
+        # Reduz o maior lado para 1024 px (acelera em CPU; mantém proporção)
+        image.thumbnail((1024, 1024))  # in-place
 
         res = model.predict(
             image,
@@ -177,13 +182,11 @@ async def predict(file: UploadFile = File(...)):
             if RETURN_IMAGE:
                 # annotated = np.ndarray (BGR)
                 annotated = r.plot()
-
                 # Salva PNG e devolve URL
                 fname = f"{uuid.uuid4().hex}.png"
                 fpath = os.path.join(ANNOT_DIR, fname)
-                Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # converte BGR->RGB
+                Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
                 image_url = f"/static/annotated/{fname}"
-
                 # (opcional) também em base64
                 image_b64 = to_b64_png(annotated)
 
@@ -212,7 +215,6 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
 
-
 @app.get("/warmup")
 def warmup():
     """Bloqueia até READY ou 90s, e roda 1 inferência curtinha para compilar o caminho."""
@@ -230,7 +232,6 @@ def warmup():
         max_det=1, device="cpu", verbose=False
     )
     return {"ok": True}
-
 
 @app.get("/ui")
 def ui():
@@ -380,4 +381,3 @@ def ui():
     </html>
     """
     return HTMLResponse(content=html)
-

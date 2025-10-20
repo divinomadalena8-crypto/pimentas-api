@@ -218,6 +218,8 @@ def warmup():
 
 from fastapi.responses import HTMLResponse  # (já deve estar importado)
 
+from fastapi.responses import HTMLResponse  # mantenha este import
+
 @app.get("/ui")
 def ui():
     html = r"""
@@ -227,39 +229,47 @@ def ui():
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Pimentas • Detector</title>
+  <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
-    :root { --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --card:#111827; --accent:#22c55e; }
-    * { box-sizing:border-box; }
-    html,body { margin:0; background:linear-gradient(180deg,#0b1220,#0f172a 40%); color:var(--fg); font:400 16px/1.4 system-ui,-apple-system,Segoe UI,Roboto; }
-    .wrap { max-width:980px; margin:auto; padding:20px 16px 56px; }
-    header { display:flex; align-items:center; gap:12px; }
-    header h1 { font-size:22px; margin:0; }
-    header small { color:var(--muted); }
-    .grid { display:grid; grid-template-columns:1fr; gap:16px; margin-top:16px; }
-    @media(min-width:900px){ .grid { grid-template-columns: 1.1fr .9fr; } }
-    .card { background:var(--card); border:1px solid #1f2937; border-radius:16px; padding:16px; box-shadow:0 6px 30px rgba(0,0,0,.25); }
-    .btn { appearance:none; border:1px solid #334155; background:#0b1220; color:var(--fg); padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600; }
-    .btn[disabled] { opacity:.6; cursor:not-allowed; }
-    .btn.accent { background:var(--accent); border-color:transparent; color:#04110a; }
-    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-    .tip { color:var(--muted); font-size:13px; }
-    .drop { border:2px dashed #334155; border-radius:16px; padding:14px; text-align:center; color:var(--muted); }
-    .drop.drag { background:#0b1326; border-color:#64748b; color:#cbd5e1; }
-    .imgwrap { background:#0b1220; border:1px solid #1f2937; border-radius:12px; padding:8px; }
-    img,video,canvas { max-width:100%; display:block; border-radius:10px; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #334155; color:#cbd5e1; font-size:13px; }
-    .status { margin:8px 0 0; min-height:22px; }
-    details { margin-top:8px; }
-    pre { background:#0b1220; border:1px solid #1f2937; color:#d1d5db; padding:12px; border-radius:12px; overflow:auto; max-height:340px; }
-    footer { margin-top:18px; color:#94a3b8; font-size:12px; }
+    :root{
+      --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569;
+      --line:#e2e8f0; --accent:#16a34a;
+    }
+    *{box-sizing:border-box}
+    html,body{
+      margin:0; background:var(--bg); color:var(--fg);
+      font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto
+    }
+    .wrap{max-width:980px;margin:auto;padding:20px 14px 56px}
+    header{display:flex;align-items:center;gap:10px}
+    header h1{font-size:22px;margin:0}
+    header small{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+    @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
+    .card{
+      background:var(--card); border:1px solid var(--line);
+      border-radius:16px; padding:16px; box-shadow:0 4px 24px rgba(15,23,42,.06)
+    }
+    .btn{
+      appearance:none; border:1px solid var(--line); background:#fff; color:var(--fg);
+      padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600
+    }
+    .btn[disabled]{opacity:.6; cursor:not-allowed}
+    .btn.accent{background:var(--accent); border-color:var(--accent); color:#fff}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+    .tip{color:var(--muted); font-size:13px}
+    .imgwrap{background:#fff; border:1px solid var(--line); border-radius:12px; padding:8px}
+    img,video,canvas{max-width:100%; display:block; border-radius:10px}
+    .pill{display:inline-block; padding:6px 10px; border-radius:999px; background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; font-size:12px}
+    .status{margin-top:8px; min-height:22px}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <img src="https://pimentas-api.onrender.com/static/favicon.png" alt="" width="28" height="28" onerror="this.style.display='none'">
+      <img src="/static/pimenta-logo.png" alt="Pimentas" width="28" height="28" onerror="this.style.display='none'">
       <h1>Detecção de Pimentas</h1>
-      <small id="tagPreset" class="pill"></small>
+      <small id="tagPreset" class="pill" style="display:none"></small>
     </header>
 
     <div class="grid">
@@ -267,15 +277,14 @@ def ui():
       <section class="card">
         <div class="row">
           <button id="btnPick" class="btn">Escolher imagem</button>
+          <!-- input oculto (também é fallback para câmera) -->
           <input id="file" type="file" accept="image/*" capture="environment" style="display:none"/>
           <button id="btnCam" class="btn">Abrir câmera</button>
           <button id="btnShot" class="btn" style="display:none">Capturar</button>
           <button id="btnSend" class="btn accent" disabled>Identificar</button>
-          <span id="chip" class="pill">Conectando...</span>
+          <span id="chip" class="pill">Conectando…</span>
         </div>
-        <p class="tip">Dica: a qualidade ideal é ~1024px no maior lado. Enviaremos a imagem comprimida para acelerar.</p>
-
-        <div id="drop" class="drop" style="margin-top:10px">Solte uma imagem aqui…</div>
+        <p class="tip">Melhor usar fotos bem enquadradas; comprimimos para ~1024px antes do envio.</p>
 
         <div class="row" style="margin-top:10px">
           <div class="imgwrap" style="flex:1">
@@ -296,169 +305,128 @@ def ui():
       <!-- COLUNA DIREITA -->
       <aside class="card">
         <div class="row" style="justify-content:space-between">
-          <strong>Resposta</strong>
+          <strong>Resumo</strong>
           <span id="badgeTime" class="pill">–</span>
         </div>
-        <details>
-          <summary>Ver JSON</summary>
-          <pre id="json">{}</pre>
-        </details>
-        <footer>Powered by YOLOv8 (CPU). © Você 🙂</footer>
+        <div id="textoResumo" class="tip" style="margin-top:8px">Envie uma imagem para começar.</div>
       </aside>
     </div>
   </div>
 
 <script>
 const API = window.location.origin;
-let currentFile = null;   // File/Blob atual a enviar
-let stream = null;        // MediaStream da câmera
+let currentFile = null;
+let stream = null;
 
-// ---------- UTIL ----------
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-
-async function compressImage(file, maxSide=1024, quality=0.8) {
-  return new Promise((resolve, reject) => {
+// UTIL
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function setStatus(txt){ document.getElementById('chip').textContent = txt; }
+async function compressImage(file, maxSide=1024, quality=0.8){
+  return new Promise((resolve,reject)=>{
     const img = new Image();
-    img.onload = () => {
-      const w = img.width, h = img.height;
-      const scale = Math.min(1, maxSide / Math.max(w,h));
-      const cw = Math.round(w*scale), ch = Math.round(h*scale);
-      const cv = document.getElementById('canvas');
-      const ctx = cv.getContext('2d');
-      cv.width = cw; cv.height = ch;
-      ctx.drawImage(img, 0, 0, cw, ch);
-      cv.toBlob(b => {
-        if(!b) return reject(new Error("compress failed"));
-        resolve(new File([b], file.name || "photo.jpg", { type:"image/jpeg" }));
-      }, "image/jpeg", quality);
+    img.onload=()=>{
+      const scale=Math.min(1, maxSide/Math.max(img.width,img.height));
+      const w=Math.round(img.width*scale), h=Math.round(img.height*scale);
+      const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
+      cv.width=w; cv.height=h; ctx.drawImage(img,0,0,w,h);
+      cv.toBlob(b=>{
+        if(!b) return reject(new Error("compress fail"));
+        resolve(new File([b], file.name||"photo.jpg", {type:"image/jpeg"}));
+      },"image/jpeg",quality);
     };
-    img.onerror = reject;
-    img.src = URL.createObjectURL(file);
+    img.onerror=reject;
+    img.src=URL.createObjectURL(file);
   });
 }
 
-function setStatus(txt){ document.getElementById('chip').textContent = txt; }
-
-// ---------- PING/WARMUP ----------
+// PING
 async function waitReady(){
   setStatus("Conectando…");
   try{
     const r = await fetch(API + "/", {cache:"no-store"});
     const d = await r.json();
-    document.getElementById('tagPreset').textContent = d.preset ? ("preset: " + d.preset) : "";
-    if(d.ready){
-      setStatus("Pronto");
-      document.getElementById('btnSend').disabled = !currentFile;
-      return;
-    }
+    if(d.preset){ const t=document.getElementById('tagPreset'); t.textContent="preset: "+d.preset; t.style.display="inline-block"; }
+    if(d.ready){ setStatus("Pronto"); document.getElementById('btnSend').disabled=!currentFile; return; }
     setStatus("Aquecendo…");
-  }catch(e){
-    setStatus("Sem conexão, tentando…");
-  }
-  await sleep(1200);
-  waitReady();
+  }catch(e){ setStatus("Sem conexão, tentando…"); }
+  await sleep(1200); waitReady();
 }
 
-// ---------- PICKER / DRAG & DROP ----------
+// FILE PICK
 const fileInput = document.getElementById('file');
 document.getElementById('btnPick').onclick = () => fileInput.click();
 fileInput.onchange = () => useLocalFile(fileInput.files?.[0]);
-
-const drop = document.getElementById('drop');
-["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
-["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
-drop.addEventListener("drop", e => {
-  const f = e.dataTransfer?.files?.[0];
-  if(f) useLocalFile(f);
-});
-
 async function useLocalFile(f){
   if(!f) return;
-  // Comprime antes de enviar
   currentFile = await compressImage(f);
   document.getElementById('preview').src = URL.createObjectURL(currentFile);
   document.getElementById('preview').style.display = "block";
   document.getElementById('video').style.display = "none";
   document.getElementById('btnSend').disabled = false;
   document.getElementById('resumo').textContent = "";
+  document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
 }
 
-// ---------- CÂMERA ----------
-const btnCam  = document.getElementById('btnCam');
-const btnShot = document.getElementById('btnShot');
-const video   = document.getElementById('video');
+// CÂMERA (com fallback)
+const btnCam=document.getElementById('btnCam');
+const btnShot=document.getElementById('btnShot');
+const video=document.getElementById('video');
 
 btnCam.onclick = async () => {
   try{
-    stream = await (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-      ? navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      : null;
-    if(!stream){ alert("Seu navegador/webview não permite câmera aqui. Use 'Escolher imagem' ou abra no navegador do aparelho."); return; }
+    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error("no gum");
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:"environment"} } });
     video.srcObject = stream;
     video.style.display = "block";
     document.getElementById('preview').style.display = "none";
     btnShot.style.display = "inline-block";
+    setStatus("Câmera aberta");
   }catch(e){
-    alert("Não foi possível abrir a câmera. Permissão concedida?");
+    // Fallback: abre o chooser nativo com câmera (funciona até em WebView)
+    fileInput.setAttribute("capture","environment");
+    fileInput.click();
   }
 };
 
 btnShot.onclick = () => {
-  // tira foto do vídeo e vira File
-  const cv = document.getElementById('canvas');
-  const ctx = cv.getContext('2d');
-  cv.width = video.videoWidth; cv.height = video.videoHeight;
-  ctx.drawImage(video, 0, 0);
-  cv.toBlob(async b => {
-    currentFile = await compressImage(new File([b], "camera.jpg", {type:"image/jpeg"}));
+  const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
+  cv.width=video.videoWidth; cv.height=video.videoHeight;
+  ctx.drawImage(video,0,0);
+  cv.toBlob(async b=>{
+    currentFile = await compressImage(new File([b],"camera.jpg",{type:"image/jpeg"}));
     document.getElementById('preview').src = URL.createObjectURL(currentFile);
     document.getElementById('preview').style.display = "block";
     video.style.display = "none";
     btnShot.style.display = "none";
-    if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     document.getElementById('btnSend').disabled = false;
-  },"image/jpeg",0.9);
+    setStatus("Foto capturada");
+  },"image/jpeg",0.92);
 };
 
-// ---------- PREDICT ----------
+// PREDICT
 document.getElementById('btnSend').onclick = async () => {
-  if(!currentFile){ return; }
+  if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
   document.getElementById('resumo').textContent = "Enviando...";
-  const t0 = performance.now();
+  const t0=performance.now();
   try{
-    const fd = new FormData();
-    fd.append("file", currentFile, currentFile.name || "image.jpg"); // campo 'file'
-    const r = await fetch(API + "/predict", { method:"POST", body: fd });
-    const d = await r.json();
-    document.getElementById('json').textContent = JSON.stringify(d, null, 2);
+    const fd=new FormData(); fd.append("file", currentFile, currentFile.name||"image.jpg");
+    const r=await fetch(API + "/predict", {method:"POST", body:fd});
+    const d=await r.json();
 
-    if(d.ok === false && d.warming_up){ 
-      document.getElementById('resumo').textContent = "Aquecendo o modelo, tente novamente...";
-      document.getElementById('btnSend').disabled = false;
-      return;
-    }
-    if(d.ok === false){ 
-      document.getElementById('resumo').textContent = "Erro: " + (d.error || "desconhecido");
-      document.getElementById('btnSend').disabled = false;
-      return;
-    }
-    // imagem anotada
-    if(d.image_b64){
-      document.getElementById('annotated').src = d.image_b64;
-    }else if(d.image_url){
-      const url = d.image_url.startsWith("http") ? d.image_url : (API + d.image_url);
-      document.getElementById('annotated').src = url;
-    }
-    // resumo
-    const ms = (performance.now()-t0)/1000;
-    document.getElementById('badgeTime').textContent = (d.inference_time_s || ms).toFixed(2) + " s";
-    if(d.top_pred){
-      const pct = Math.round((d.top_pred.conf||0)*100);
-      document.getElementById('resumo').textContent = `Detectou: ${d.top_pred.classe} · ${pct}% · Caixas: ${d.num_dets}`;
-    }else{
-      document.getElementById('resumo').textContent = `Nenhuma pimenta detectada.`;
-    }
+    if(d.ok===false && d.warming_up){ document.getElementById('resumo').textContent="Aquecendo o modelo… tente novamente"; return; }
+    if(d.ok===false){ document.getElementById('resumo').textContent="Erro: " + (d.error||"desconhecido"); return; }
+
+    if(d.image_b64){ document.getElementById('annotated').src = d.image_b64; }
+    else if(d.image_url){ const url = d.image_url.startsWith("http")? d.image_url : (API + d.image_url); document.getElementById('annotated').src = url; }
+
+    const ms=(performance.now()-t0)/1000;
+    document.getElementById('badgeTime').textContent = (d.inference_time_s||ms).toFixed(2) + " s";
+    const resumo = d.top_pred ? `Pimenta: ${d.top_pred.classe} · ${Math.round((d.top_pred.conf||0)*100)}% · Caixas: ${d.num_dets}`
+                              : "Nenhuma pimenta detectada.";
+    document.getElementById('resumo').textContent = resumo;
+    document.getElementById('textoResumo').textContent = "Resultado exibido ao lado.";
   }catch(e){
     document.getElementById('resumo').textContent = "Falha ao chamar a API.";
   }finally{
@@ -473,4 +441,3 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
-

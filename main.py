@@ -222,6 +222,8 @@ from fastapi.responses import HTMLResponse  # mantenha este import
 
 from fastapi.responses import HTMLResponse  # mantenha este import
 
+from fastapi.responses import HTMLResponse  # manter import
+
 @app.get("/ui")
 def ui():
     html = r"""
@@ -233,37 +235,25 @@ def ui():
   <title>Pimentas • Detector</title>
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
-    :root{
-      --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569;
-      --line:#e2e8f0; --accent:#16a34a;
-    }
+    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
-    html,body{
-      margin:0; background:var(--bg); color:var(--fg);
-      font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto
-    }
+    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
     .wrap{max-width:980px;margin:auto;padding:20px 14px 56px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:22px;margin:0}
     header small{color:var(--muted)}
     .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
     @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
-    .card{
-      background:var(--card); border:1px solid var(--line);
-      border-radius:16px; padding:16px; box-shadow:0 4px 24px rgba(15,23,42,.06)
-    }
-    .btn{
-      appearance:none; border:1px solid var(--line); background:#fff; color:var(--fg);
-      padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600
-    }
-    .btn[disabled]{opacity:.6; cursor:not-allowed}
-    .btn.accent{background:var(--accent); border-color:var(--accent); color:#fff}
-    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
-    .tip{color:var(--muted); font-size:13px}
-    .imgwrap{background:#fff; border:1px solid var(--line); border-radius:12px; padding:8px}
-    img,video,canvas{max-width:100%; display:block; border-radius:10px}
-    .pill{display:inline-block; padding:6px 10px; border-radius:999px; background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; font-size:12px}
-    .status{margin-top:8px; min-height:22px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .tip{color:var(--muted);font-size:13px}
+    .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px}
+    img,video,canvas{max-width:100%;display:block;border-radius:10px}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
+    .status{margin-top:8px;min-height:22px}
   </style>
 </head>
 <body>
@@ -275,18 +265,17 @@ def ui():
     </header>
 
     <div class="grid">
-      <!-- COLUNA ESQUERDA -->
       <section class="card">
         <div class="row">
           <button id="btnPick" class="btn">Escolher imagem</button>
-          <!-- input oculto (também é fallback para câmera) -->
-          <input id="file" type="file" accept="image/*" capture="environment" style="display:none"/>
+          <!-- sem capture aqui para abrir a galeria -->
+          <input id="file" type="file" accept="image/*" style="display:none"/>
           <button id="btnCam" class="btn">Abrir câmera</button>
           <button id="btnShot" class="btn" style="display:none">Capturar</button>
           <button id="btnSend" class="btn accent" disabled>Identificar</button>
           <span id="chip" class="pill">Conectando…</span>
         </div>
-        <p class="tip">Melhor usar fotos bem enquadradas; comprimimos para ~1024px antes do envio.</p>
+        <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
 
         <div class="row" style="margin-top:10px">
           <div class="imgwrap" style="flex:1">
@@ -304,7 +293,6 @@ def ui():
         <div id="resumo" class="status tip"></div>
       </section>
 
-      <!-- COLUNA DIREITA -->
       <aside class="card">
         <div class="row" style="justify-content:space-between">
           <strong>Resumo</strong>
@@ -320,9 +308,9 @@ const API = window.location.origin;
 let currentFile = null;
 let stream = null;
 
-// UTIL
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(txt){ document.getElementById('chip').textContent = txt; }
+
 async function compressImage(file, maxSide=1024, quality=0.8){
   return new Promise((resolve,reject)=>{
     const img = new Image();
@@ -341,7 +329,6 @@ async function compressImage(file, maxSide=1024, quality=0.8){
   });
 }
 
-// PING
 async function waitReady(){
   setStatus("Conectando…");
   try{
@@ -354,10 +341,19 @@ async function waitReady(){
   await sleep(1200); waitReady();
 }
 
-// FILE PICK
+// ---------- Escolher imagem (galeria) ----------
 const fileInput = document.getElementById('file');
-document.getElementById('btnPick').onclick = () => fileInput.click();
-fileInput.onchange = () => useLocalFile(fileInput.files?.[0]);
+document.getElementById('btnPick').onclick = () => {
+  // garante galeria/arquivos
+  fileInput.removeAttribute('capture');
+  fileInput.value = ""; // permite reescolher o mesmo arquivo
+  fileInput.click();
+};
+fileInput.onchange = () => {
+  fileInput.removeAttribute('capture'); // mantém padrão para próximas vezes
+  useLocalFile(fileInput.files?.[0]);
+};
+
 async function useLocalFile(f){
   if(!f) return;
   currentFile = await compressImage(f);
@@ -369,7 +365,7 @@ async function useLocalFile(f){
   document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
 }
 
-// CÂMERA (com fallback)
+// ---------- Câmera (com fallback) ----------
 const btnCam=document.getElementById('btnCam');
 const btnShot=document.getElementById('btnShot');
 const video=document.getElementById('video');
@@ -384,8 +380,9 @@ btnCam.onclick = async () => {
     btnShot.style.display = "inline-block";
     setStatus("Câmera aberta");
   }catch(e){
-    // Fallback: abre o chooser nativo com câmera (funciona até em WebView)
-    fileInput.setAttribute("capture","environment");
+    // fallback: forçar câmera nativa via file input
+    fileInput.setAttribute('capture','environment');
+    fileInput.value = "";
     fileInput.click();
   }
 };
@@ -406,7 +403,7 @@ btnShot.onclick = () => {
   },"image/jpeg",0.92);
 };
 
-// PREDICT
+// ---------- Predict ----------
 document.getElementById('btnSend').onclick = async () => {
   if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
@@ -436,7 +433,6 @@ document.getElementById('btnSend').onclick = async () => {
   }
 };
 
-// start
 waitReady();
 </script>
 </body>

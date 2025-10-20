@@ -224,6 +224,8 @@ from fastapi.responses import HTMLResponse  # mantenha este import
 
 from fastapi.responses import HTMLResponse  # manter import
 
+from fastapi.responses import HTMLResponse
+
 @app.get("/ui")
 def ui():
     html = r"""
@@ -268,11 +270,16 @@ def ui():
       <section class="card">
         <div class="row">
           <button id="btnPick" class="btn">Escolher imagem</button>
-          <!-- sem capture aqui para abrir a galeria -->
-          <input id="file" type="file" accept="image/*" style="display:none"/>
+          <!-- inputs separados para garantir comportamento -->
+          <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
+          <input id="fileCamera"  type="file" accept="image/*" capture="environment" style="display:none"/>
+
           <button id="btnCam" class="btn">Abrir câmera</button>
           <button id="btnShot" class="btn" style="display:none">Capturar</button>
+
           <button id="btnSend" class="btn accent" disabled>Identificar</button>
+          <button id="btnChat" class="btn" style="display:none">Conversar sobre a pimenta</button>
+
           <span id="chip" class="pill">Conectando…</span>
         </div>
         <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
@@ -307,6 +314,7 @@ def ui():
 const API = window.location.origin;
 let currentFile = null;
 let stream = null;
+let lastClass = null;  // classe detectada para o chat
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(txt){ document.getElementById('chip').textContent = txt; }
@@ -341,18 +349,18 @@ async function waitReady(){
   await sleep(1200); waitReady();
 }
 
-// ---------- Escolher imagem (galeria) ----------
-const fileInput = document.getElementById('file');
+// --------- Entradas de arquivo (separadas) ---------
+const inputGallery = document.getElementById('fileGallery');
+const inputCamera  = document.getElementById('fileCamera');
+
 document.getElementById('btnPick').onclick = () => {
-  // garante galeria/arquivos
-  fileInput.removeAttribute('capture');
-  fileInput.value = ""; // permite reescolher o mesmo arquivo
-  fileInput.click();
+  // garante GALERIA/ARQUIVOS no celular
+  inputGallery.value = "";
+  inputGallery.click();
 };
-fileInput.onchange = () => {
-  fileInput.removeAttribute('capture'); // mantém padrão para próximas vezes
-  useLocalFile(fileInput.files?.[0]);
-};
+
+inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
+inputCamera.onchange  = () => useLocalFile(inputCamera.files?.[0]);
 
 async function useLocalFile(f){
   if(!f) return;
@@ -361,14 +369,16 @@ async function useLocalFile(f){
   document.getElementById('preview').style.display = "block";
   document.getElementById('video').style.display = "none";
   document.getElementById('btnSend').disabled = false;
+  document.getElementById('btnChat').style.display = "none"; // oculta chat até novo resultado
+  lastClass = null;
   document.getElementById('resumo').textContent = "";
   document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
 }
 
-// ---------- Câmera (com fallback) ----------
-const btnCam=document.getElementById('btnCam');
-const btnShot=document.getElementById('btnShot');
-const video=document.getElementById('video');
+// --------- Câmera (com getUserMedia e fallback para inputCamera) ---------
+const btnCam  = document.getElementById('btnCam');
+const btnShot = document.getElementById('btnShot');
+const video   = document.getElementById('video');
 
 btnCam.onclick = async () => {
   try{
@@ -380,10 +390,9 @@ btnCam.onclick = async () => {
     btnShot.style.display = "inline-block";
     setStatus("Câmera aberta");
   }catch(e){
-    // fallback: forçar câmera nativa via file input
-    fileInput.setAttribute('capture','environment');
-    fileInput.value = "";
-    fileInput.click();
+    // Fallback confiável para WebView: input com capture
+    inputCamera.value = "";
+    inputCamera.click();
   }
 };
 
@@ -399,11 +408,13 @@ btnShot.onclick = () => {
     btnShot.style.display = "none";
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     document.getElementById('btnSend').disabled = false;
+    document.getElementById('btnChat').style.display = "none";
+    lastClass = null;
     setStatus("Foto capturada");
   },"image/jpeg",0.92);
 };
 
-// ---------- Predict ----------
+// --------- Predição ---------
 document.getElementById('btnSend').onclick = async () => {
   if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
@@ -426,6 +437,19 @@ document.getElementById('btnSend').onclick = async () => {
                               : "Nenhuma pimenta detectada.";
     document.getElementById('resumo').textContent = resumo;
     document.getElementById('textoResumo').textContent = "Resultado exibido ao lado.";
+
+    // habilita o Chat
+    if(d.top_pred && d.top_pred.classe){
+      lastClass = d.top_pred.classe;
+      const chatBtn = document.getElementById('btnChat');
+      chatBtn.style.display = "inline-block";
+      const base = "https://huggingface.co/spaces/bulipucca/pimentas-chat";
+      const link = base + "?pepper=" + encodeURIComponent(lastClass) + "&from=detector";
+      chatBtn.onclick = () => window.open(link, "_blank");
+    }else{
+      document.getElementById('btnChat').style.display = "none";
+      lastClass = null;
+    }
   }catch(e){
     document.getElementById('resumo').textContent = "Falha ao chamar a API.";
   }finally{

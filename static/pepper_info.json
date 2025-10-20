@@ -1,0 +1,90 @@
+{
+  "Biquinho-Pepper": {
+    "nome": "Biquinho",
+    "scoville": "0–1.000",
+    "descricao": "Aromática e muito suave (quase sem ardor), formato de gota. Ideal para sabor sem picância.",
+    "usos": "Conservas doces/agridoce, saladas, petiscos e sanduíches.",
+    "receitas": "Conserva agridoce de biquinho; chutney de biquinho.",
+    "conservacao": "Refrigerar fresca por 5–7 dias; em conserva dura meses.",
+    "substituicoes": "Cambuci (também muito suave).",
+    "origem": "Seleções brasileiras de Capsicum chinense.",
+    "imagem": "/static/peppers/biquinho-pepper.jpg"
+  },
+  "Bode-Pepper": {
+    "nome": "Bode",
+    "scoville": "50.000–100.000",
+    "descricao": "Pequena, perfumada e picante; muito comum no Centro-Oeste e Nordeste do Brasil.",
+    "usos": "Molhos, conservas, tempero de carnes e feijoadas.",
+    "receitas": "Molho de pimenta-bode; conserva em vinagre.",
+    "conservacao": "Refrigerar 5–7 dias; ótima para conserva e fermentação.",
+    "substituicoes": "Malagueta (perfil semelhante); Habanero (mais frutada e potente).",
+    "origem": "Brasil (variedade local de Capsicum chinense).",
+    "imagem": "/static/peppers/bode-pepper.jpg"
+  },
+  "Chili-Pepper": {
+    "nome": "Chili",
+    "scoville": "5.000–50.000",
+    "descricao": "Termo genérico para pimentas de ardência baixa a média em culinárias mexicana/tex-mex.",
+    "usos": "Chili con carne, salsas, tacos, picles e molhos de mesa.",
+    "receitas": "Salsa picante básica; chili con carne.",
+    "conservacao": "Refrigerar 5–7 dias; pode ser desidratada.",
+    "substituicoes": "Dedo-de-moça ou Jalapeño (conforme a receita).",
+    "origem": "Américas; popularizada mundialmente.",
+    "imagem": "/static/peppers/chili-pepper.jpg"
+  },
+  "Fidalga-Pepper": {
+    "nome": "Fidalga",
+    "scoville": "50.000–100.000",
+    "descricao": "Variedade aromática e picante (C. chinense), com notas frutadas.",
+    "usos": "Molhos encorpados, peixes, carnes e conservas.",
+    "receitas": "Molho de pimenta fidalga; conserva aromática.",
+    "conservacao": "Refrigerar 5–7 dias; adequada a conserva/fermentação.",
+    "substituicoes": "Bode (perfil próximo) ou Habanero (mais frutada).",
+    "origem": "Brasil (variedades regionais).",
+    "imagem": "/static/peppers/fidalga-pepper.jpg"
+  },
+  "Habanero-Pepper": {
+    "nome": "Habanero",
+    "scoville": "150.000–350.000",
+    "descricao": "Muito picante, com perfume frutado/cítrico. Usar com parcimônia.",
+    "usos": "Salsas intensas, marinadas de churrasco, molhos encorpados.",
+    "receitas": "Salsa habanero; molho de habanero com manga.",
+    "conservacao": "Refrigerar 5–7 dias; congelar picada.",
+    "substituicoes": "Scotch Bonnet (similar); Murupi (bem picante).",
+    "origem": "Caribe/México (Yucatán).",
+    "imagem": "/static/peppers/habanero-pepper.jpg"
+  },
+  "Jalapeño-Pepper": {
+    "nome": "Jalapeño",
+    "scoville": "2.500–8.000",
+    "descricao": "Ardência baixa a média, polpa espessa. Quando defumada e seca, vira chipotle.",
+    "usos": "Nachos, tacos, hambúrgueres, picles e recheios (poppers).",
+    "receitas": "Jalapeño em conserva; poppers recheados; chipotle caseiro.",
+    "conservacao": "Refrigerar 5–7 dias; ótima para picles.",
+    "substituicoes": "Dedo-de-moça (mais estreita); Serrano (levemente mais picante).",
+    "origem": "México.",
+    "imagem": "/static/peppers/jalapeno-pepper.jpg"
+  },
+  "ScotchBonnet-Pepper": {
+    "nome": "Scotch Bonnet",
+    "scoville": "100.000–350.000",
+    "descricao": "Muito picante, típica do Caribe, frutada como o Habanero.",
+    "usos": "Jerk caribenho, molhos fortes, marinadas e chutneys.",
+    "receitas": "Molho Scotch Bonnet; jerk marinade.",
+    "conservacao": "Refrigerar 5–7 dias; boa para conservas/fermentação.",
+    "substituicoes": "Habanero (muito próximo).",
+    "origem": "Caribe (Jamaica e região).",
+    "imagem": "/static/peppers/scotchbonnet-pepper.jpg"
+  },
+  "Cambuci-Pepper": {
+    "nome": "Cambuci",
+    "scoville": "0–1.000",
+    "descricao": "Formato de sino/chapéu, muito suave e aromática; conhecida como chapéu-de-frade.",
+    "usos": "Recheada, grelhada, salteada; conservas suaves e saladas.",
+    "receitas": "Cambuci recheada ao forno; conserva de cambuci.",
+    "conservacao": "Refrigerar até 1 semana; pode congelar após pré-preparo.",
+    "substituicoes": "Biquinho (doce/suave).",
+    "origem": "Sudeste do Brasil.",
+    "imagem": "/static/peppers/cambuci-pepper.jpg"
+  }
+}

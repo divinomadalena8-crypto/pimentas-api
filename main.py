@@ -220,6 +220,8 @@ from fastapi.responses import HTMLResponse  # (já deve estar importado)
 
 from fastapi.responses import HTMLResponse  # mantenha este import
 
+from fastapi.responses import HTMLResponse  # mantenha este import
+
 @app.get("/ui")
 def ui():
     html = r"""

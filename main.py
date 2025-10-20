@@ -216,7 +216,6 @@ def warmup():
                       max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
-
 from fastapi.responses import HTMLResponse
 
 @app.get("/ui")

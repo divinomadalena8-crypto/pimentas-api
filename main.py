@@ -216,6 +216,9 @@ def warmup():
                       max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 from fastapi.responses import HTMLResponse
 
 @app.get("/ui")
@@ -457,3 +460,4 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
+

@@ -216,13 +216,6 @@ def warmup():
                       max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
-from fastapi.responses import HTMLResponse  # (já deve estar importado)
-
-from fastapi.responses import HTMLResponse  # mantenha este import
-
-from fastapi.responses import HTMLResponse  # mantenha este import
-
-from fastapi.responses import HTMLResponse  # manter import
 
 from fastapi.responses import HTMLResponse
 
@@ -234,13 +227,13 @@ def ui():
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Pimentas • Detector</title>
+  <title>Identificação de Pimentas</title>
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
     html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
-    .wrap{max-width:980px;margin:auto;padding:20px 14px 56px}
+    .wrap{max-width:980px;margin:auto;padding:20px 14px 72px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:22px;margin:0}
     header small{color:var(--muted)}
@@ -256,14 +249,14 @@ def ui():
     img,video,canvas{max-width:100%;display:block;border-radius:10px}
     .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
     .status{margin-top:8px;min-height:22px}
+    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <img src="/static/pimenta-logo.png" alt="Pimentas" width="28" height="28" onerror="this.style.display='none'">
-      <h1>Detecção de Pimentas</h1>
-      <small id="tagPreset" class="pill" style="display:none"></small>
+      <img src="/static/pimenta-logo.png" alt="Logo" width="28" height="28" onerror="this.style.display='none'">
+      <h1>Identificação de Pimentas</h1>
     </header>
 
     <div class="grid">
@@ -310,6 +303,8 @@ def ui():
     </div>
   </div>
 
+  <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
+
 <script>
 const API = window.location.origin;
 let currentFile = null;
@@ -342,7 +337,6 @@ async function waitReady(){
   try{
     const r = await fetch(API + "/", {cache:"no-store"});
     const d = await r.json();
-    if(d.preset){ const t=document.getElementById('tagPreset'); t.textContent="preset: "+d.preset; t.style.display="inline-block"; }
     if(d.ready){ setStatus("Pronto"); document.getElementById('btnSend').disabled=!currentFile; return; }
     setStatus("Aquecendo…");
   }catch(e){ setStatus("Sem conexão, tentando…"); }
@@ -354,9 +348,8 @@ const inputGallery = document.getElementById('fileGallery');
 const inputCamera  = document.getElementById('fileCamera');
 
 document.getElementById('btnPick').onclick = () => {
-  // garante GALERIA/ARQUIVOS no celular
   inputGallery.value = "";
-  inputGallery.click();
+  inputGallery.click(); // abre GALERIA/arquivos
 };
 
 inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
@@ -369,13 +362,13 @@ async function useLocalFile(f){
   document.getElementById('preview').style.display = "block";
   document.getElementById('video').style.display = "none";
   document.getElementById('btnSend').disabled = false;
-  document.getElementById('btnChat').style.display = "none"; // oculta chat até novo resultado
+  document.getElementById('btnChat').style.display = "none";
   lastClass = null;
   document.getElementById('resumo').textContent = "";
   document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
 }
 
-// --------- Câmera (com getUserMedia e fallback para inputCamera) ---------
+// --------- Câmera (getUserMedia + fallback inputCamera) ---------
 const btnCam  = document.getElementById('btnCam');
 const btnShot = document.getElementById('btnShot');
 const video   = document.getElementById('video');
@@ -390,9 +383,8 @@ btnCam.onclick = async () => {
     btnShot.style.display = "inline-block";
     setStatus("Câmera aberta");
   }catch(e){
-    // Fallback confiável para WebView: input com capture
-    inputCamera.value = "";
-    inputCamera.click();
+    inputCamera.value = "";   // fallback confiável para WebView
+    inputCamera.click();      // abre câmera nativa via seletor
   }
 };
 
@@ -414,7 +406,7 @@ btnShot.onclick = () => {
   },"image/jpeg",0.92);
 };
 
-// --------- Predição ---------
+// --------- Predição + Chat ---------
 document.getElementById('btnSend').onclick = async () => {
   if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
@@ -438,16 +430,19 @@ document.getElementById('btnSend').onclick = async () => {
     document.getElementById('resumo').textContent = resumo;
     document.getElementById('textoResumo').textContent = "Resultado exibido ao lado.";
 
-    // habilita o Chat
+    // habilita o Chat com a classe detectada
+    const chatBtn = document.getElementById('btnChat');
     if(d.top_pred && d.top_pred.classe){
       lastClass = d.top_pred.classe;
-      const chatBtn = document.getElementById('btnChat');
       chatBtn.style.display = "inline-block";
       const base = "https://huggingface.co/spaces/bulipucca/pimentas-chat";
       const link = base + "?pepper=" + encodeURIComponent(lastClass) + "&from=detector";
-      chatBtn.onclick = () => window.open(link, "_blank");
+      chatBtn.onclick = () => {
+        // tenta abrir em nova aba; se o webview bloquear, usa mesma aba
+        try{ window.open(link, "_blank"); } catch(e){ location.href = link; }
+      };
     }else{
-      document.getElementById('btnChat').style.display = "none";
+      chatBtn.style.display = "none";
       lastClass = null;
     }
   }catch(e){

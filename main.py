@@ -1,11 +1,10 @@
-# main.py — YOLOv8 (detecção) para Render Free
-# - Uvicorn sobe rápido; modelo baixa/carrega em background (evita 502)
-# - Sempre retorna imagem anotada (opcional via RETURN_IMAGE)
-# - Salva PNG em /static/annotated e devolve image_url (RELATIVA)
-# - Suporte a HF_TOKEN para repositório privado (Hugging Face)
-
-from fastapi.staticfiles import StaticFiles
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# main.py — API de detecção (YOLOv8) + UI leve (identificação + “Mais informações”)
+# - Inicialização rápida; modelo baixa/carrega em thread (evita 502 no Render Free)
+# - /predict sempre pode devolver imagem anotada (RETURN_IMAGE=True)
+# - Anotadas salvas em /static/annotated com URL relativa (funciona em WebView)
+# - /ui (claro, sem arrastar/soltar e sem JSON bruto)
+# - /info (mesmo visual) lê static/pepper_info.json e mostra fatos + “chat” simples
+# - Suporte a MODEL_URL (HF/HTTP direto) e HF_TOKEN (repositório privado)
 
 import os, io, time, threading, base64, requests, uuid
 from typing import List
@@ -24,8 +23,9 @@ import numpy as np
 
 app = FastAPI(title="API Pimentas YOLOv8")
 
-# ===================== CONFIG =====================
-
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"
@@ -36,6 +36,7 @@ MODEL_PATH = (
     else "best.pt"
 )
 
+# Presets internos (não exibimos no UI)
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
     "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),
@@ -54,18 +55,23 @@ REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 STATIC_DIR = os.path.join(os.getcwd(), "static")
 ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
 os.makedirs(ANNOT_DIR, exist_ok=True)
+
+# Monta /static (apenas 1 vez)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ===================== ESTADO GLOBAL =====================
-
+# ---------------------------------------------------------------------------
+# ESTADO GLOBAL
+# ---------------------------------------------------------------------------
 model = None
 labels = {}
 READY = False
 LOAD_ERR = None
 
-# ===================== AUX =====================
-
+# ---------------------------------------------------------------------------
+# AUX
+# ---------------------------------------------------------------------------
 def ensure_model_file():
+    """Baixa o arquivo do modelo para MODEL_PATH, se necessário."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
@@ -80,6 +86,7 @@ def ensure_model_file():
     print("[init] Download concluído:", MODEL_PATH)
 
 def to_b64_png(np_bgr: np.ndarray) -> str | None:
+    """Converte ndarray BGR em dataURL PNG base64 (para render imediato)."""
     try:
         rgb = np_bgr[:, :, ::-1]
         buf = io.BytesIO()
@@ -96,7 +103,7 @@ def background_load():
         ensure_model_file()
         m = YOLO(MODEL_PATH)
         try:
-            m.fuse()
+            m.fuse()  # ignora se não for aplicável (ex.: ONNX)
         except Exception:
             pass
         model = m
@@ -108,22 +115,22 @@ def background_load():
         READY = False
         print("[init] ERRO ao carregar modelo:", LOAD_ERR)
 
-# ===================== LIFECYCLE =====================
-
+# ---------------------------------------------------------------------------
+# LIFECYCLE
+# ---------------------------------------------------------------------------
 @app.on_event("startup")
 def on_startup():
     threading.Thread(target=background_load, daemon=True).start()
 
-# ===================== ROTAS =====================
-
+# ---------------------------------------------------------------------------
+# ROTAS — API
+# ---------------------------------------------------------------------------
 @app.get("/")
 def health():
     return {
         "status": "ok" if READY else "warming",
         "ready": READY,
         "error": LOAD_ERR,
-        "preset": PRESET,
-        "cfg": CFG,
         "model": MODEL_PATH if MODEL_PATH else None,
         "classes": list(labels.values()) if READY else None,
     }
@@ -132,17 +139,35 @@ def health():
 def health_head():
     return Response(status_code=200)
 
+@app.get("/warmup")
+def warmup():
+    """Espera READY e roda 1 inferência curtinha (compila caminho)."""
+    t0 = time.time()
+    while not READY and time.time() - t0 < 90:
+        time.sleep(0.5)
+    if not READY:
+        return {"ok": False, "warming_up": True}
+    img = Image.new("RGB", (64, 64), (255, 255, 255))
+    _ = model.predict(
+        img,
+        imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
+        max_det=1, device="cpu", verbose=False
+    )
+    return {"ok": True}
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not READY:
-        return JSONResponse({"ok": False, "warming_up": True, "error": LOAD_ERR}, status_code=503)
+        return JSONResponse(
+            {"ok": False, "warming_up": True, "error": LOAD_ERR},
+            status_code=503
+        )
 
     t0 = time.time()
     try:
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
-
-        # ↓ acelera em CPU, mantém proporção
+        # Acelera em CPU mantendo proporção
         image.thumbnail((1024, 1024))  # in-place
 
         res = model.predict(
@@ -170,17 +195,14 @@ async def predict(file: UploadFile = File(...)):
 
             image_b64 = None
             image_url = None
-
             if RETURN_IMAGE:
                 annotated = r.plot()  # np.ndarray (BGR)
                 # salva arquivo
                 fname = f"{uuid.uuid4().hex}.png"
                 fpath = os.path.join(ANNOT_DIR, fname)
                 Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
-                # URL RELATIVA (evita mixed content)
-                image_url = f"/static/annotated/{fname}"
-                # também em base64 (fallback imediato)
-                image_b64 = to_b64_png(annotated)
+                image_url = f"/static/annotated/{fname}"  # relativa (ok em WebView)
+                image_b64 = to_b64_png(annotated)         # base64 (fallback imediato)
 
             top = max(preds, key=lambda p: p["conf"]) if preds else None
             return JSONResponse({
@@ -193,6 +215,7 @@ async def predict(file: UploadFile = File(...)):
                 "image_url": image_url
             })
 
+        # Sem detecções
         return JSONResponse({
             "ok": True,
             "inference_time_s": round(time.time() - t0, 3),
@@ -204,27 +227,220 @@ async def predict(file: UploadFile = File(...)):
         })
 
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
+        return JSONResponse(
+            {"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)},
+            status_code=200
+        )
 
-@app.get("/warmup")
-def warmup():
-    """Espera READY e roda 1 inferência curtinha (compila caminho)."""
-    t0 = time.time()
-    while not READY and time.time() - t0 < 90:
-        time.sleep(0.5)
-    if not READY:
-        return {"ok": False, "warming_up": True}
-    img = Image.new("RGB", (64, 64), (255, 255, 255))
-    _ = model.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
-                      max_det=1, device="cpu", verbose=False)
-    return {"ok": True}
+# ---------------------------------------------------------------------------
+# ROTAS — UI: /ui (principal) e /info (detalhes)
+# ---------------------------------------------------------------------------
+@app.get("/ui")
+def ui():
+    html = r"""
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Identificação de Pimentas</title>
+  <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
+  <style>
+    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
+    *{box-sizing:border-box}
+    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
+    .wrap{max-width:980px;margin:auto;padding:20px 14px 72px}
+    header{display:flex;align-items:center;gap:10px}
+    header h1{font-size:22px;margin:0}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+    @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .tip{color:var(--muted);font-size:13px}
+    .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px}
+    img,video,canvas{max-width:100%;display:block;border-radius:10px}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
+    .status{margin-top:8px;min-height:22px}
+    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:#64748b;font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/static/pimenta-logo.png" alt="Logo" width="28" height="28" onerror="this.style.display='none'">
+      <h1>Identificação de Pimentas</h1>
+    </header>
 
-from fastapi.staticfiles import StaticFiles
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    <div class="grid">
+      <section class="card">
+        <div class="row">
+          <button id="btnPick" class="btn">Escolher imagem</button>
+          <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
+          <input id="fileCamera"  type="file" accept="image/*" capture="environment" style="display:none"/>
 
-from fastapi.responses import HTMLResponse
+          <button id="btnCam" class="btn">Abrir câmera</button>
+          <button id="btnShot" class="btn" style="display:none">Capturar</button>
 
-from fastapi.responses import HTMLResponse
+          <button id="btnSend" class="btn accent" disabled>Identificar</button>
+          <button id="btnChat" class="btn" style="display:none">Mais informações</button>
+
+          <span id="chip" class="pill">Conectando…</span>
+        </div>
+        <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
+
+        <div class="row" style="margin-top:10px">
+          <div class="imgwrap" style="flex:1">
+            <small class="tip">Original</small>
+            <video id="video" autoplay playsinline style="display:none"></video>
+            <img id="preview" alt="preview" style="display:none"/>
+            <canvas id="canvas" style="display:none"></canvas>
+          </div>
+          <div class="imgwrap" style="flex:1">
+            <small class="tip">Resultado</small>
+            <img id="annotated" alt="resultado"/>
+          </div>
+        </div>
+
+        <div id="resumo" class="status tip"></div>
+      </section>
+
+      <aside class="card">
+        <div class="row" style="justify-content:space-between">
+          <strong>Resumo</strong>
+          <span id="badgeTime" class="pill">–</span>
+        </div>
+        <div id="textoResumo" class="tip" style="margin-top:8px">Envie uma imagem para começar.</div>
+      </aside>
+    </div>
+  </div>
+
+  <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
+
+<script>
+const API = window.location.origin;
+let currentFile = null, stream = null, lastClass = null;
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function setStatus(t){ document.getElementById('chip').textContent = t; }
+
+async function compressImage(file, maxSide=1024, quality=0.8){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    img.onload=()=>{
+      const s=Math.min(1,maxSide/Math.max(img.width,img.height));
+      const w=Math.round(img.width*s), h=Math.round(img.height*s);
+      const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
+      cv.width=w; cv.height=h; ctx.drawImage(img,0,0,w,h);
+      cv.toBlob(b=>{
+        if(!b) return reject(new Error("compress fail"));
+        resolve(new File([b], file.name||"photo.jpg", {type:"image/jpeg"}));
+      },"image/jpeg",quality);
+    };
+    img.onerror=reject; img.src=URL.createObjectURL(file);
+  });
+}
+
+async function waitReady(){
+  setStatus("Conectando…");
+  try{
+    const r = await fetch(API + "/", {cache:"no-store"});
+    const d = await r.json();
+    if(d.ready){ setStatus("Pronto"); document.getElementById('btnSend').disabled=!currentFile; return; }
+    setStatus("Aquecendo…");
+  }catch{ setStatus("Sem conexão, tentando…"); }
+  await sleep(1200); waitReady();
+}
+
+// inputs separados
+const inputGallery = document.getElementById('fileGallery');
+const inputCamera  = document.getElementById('fileCamera');
+document.getElementById('btnPick').onclick = () => { inputGallery.value=""; inputGallery.click(); };
+inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
+inputCamera.onchange  = () => useLocalFile(inputCamera.files?.[0]);
+
+async function useLocalFile(f){
+  if(!f) return;
+  currentFile = await compressImage(f);
+  document.getElementById('preview').src = URL.createObjectURL(currentFile);
+  document.getElementById('preview').style.display = "block";
+  document.getElementById('video').style.display = "none";
+  document.getElementById('btnSend').disabled = false;
+  document.getElementById('btnChat').style.display = "none";
+  lastClass = null;
+  document.getElementById('resumo').textContent = "";
+  document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
+}
+
+// câmera + fallback
+const btnCam=document.getElementById('btnCam'), btnShot=document.getElementById('btnShot'), video=document.getElementById('video');
+btnCam.onclick = async () => {
+  try{
+    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error();
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:"environment"} } });
+    video.srcObject = stream; video.style.display="block";
+    document.getElementById('preview').style.display="none";
+    btnShot.style.display="inline-block"; setStatus("Câmera aberta");
+  }catch{
+    inputCamera.value=""; inputCamera.click(); // fallback para WebView/navegadores restritos
+  }
+};
+btnShot.onclick = () => {
+  const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
+  cv.width=video.videoWidth; cv.height=video.videoHeight; ctx.drawImage(video,0,0);
+  cv.toBlob(async b=>{
+    currentFile = await compressImage(new File([b],"camera.jpg",{type:"image/jpeg"}));
+    document.getElementById('preview').src = URL.createObjectURL(currentFile);
+    document.getElementById('preview').style.display="block";
+    video.style.display="none"; btnShot.style.display="none";
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    document.getElementById('btnSend').disabled=false;
+    document.getElementById('btnChat').style.display="none";
+    lastClass=null; setStatus("Foto capturada");
+  },"image/jpeg",0.92);
+};
+
+// predição + "Mais informações"
+document.getElementById('btnSend').onclick = async () => {
+  if(!currentFile) return;
+  document.getElementById('btnSend').disabled = true;
+  document.getElementById('resumo').textContent = "Enviando...";
+  const t0=performance.now();
+  try{
+    const fd=new FormData(); fd.append("file", currentFile, currentFile.name||"image.jpg");
+    const r=await fetch(API + "/predict", {method:"POST", body:fd});
+    const d=await r.json();
+    if(d.ok===false && d.warming_up){ document.getElementById('resumo').textContent="Aquecendo o modelo… tente novamente"; return; }
+    if(d.ok===false){ document.getElementById('resumo').textContent="Erro: " + (d.error||"desconhecido"); return; }
+
+    if(d.image_b64){ document.getElementById('annotated').src = d.image_b64; }
+    else if(d.image_url){ const url = d.image_url.startsWith("http")? d.image_url : (API + d.image_url); document.getElementById('annotated').src = url; }
+
+    const ms=(performance.now()-t0)/1000;
+    document.getElementById('badgeTime').textContent = (d.inference_time_s||ms).toFixed(2) + " s";
+    const resumo = d.top_pred ? `Pimenta: ${d.top_pred.classe} · ${Math.round((d.top_pred.conf||0)*100)}% · Caixas: ${d.num_dets}` : "Nenhuma pimenta detectada.";
+    document.getElementById('resumo').textContent = resumo;
+    document.getElementById('textoResumo').textContent = "Resultado exibido ao lado.";
+
+    // botão interno /info
+    const chatBtn = document.getElementById('btnChat');
+    if(d.top_pred && d.top_pred.classe){
+      lastClass = d.top_pred.classe; chatBtn.style.display="inline-block";
+      chatBtn.textContent = "Mais informações";
+      chatBtn.onclick = () => { location.href = "/info?pepper=" + encodeURIComponent(lastClass); };
+    }else{ chatBtn.style.display="none"; lastClass=null; }
+  }catch{ document.getElementById('resumo').textContent = "Falha ao chamar a API."; }
+  finally{ document.getElementById('btnSend').disabled = false; }
+};
+waitReady();
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
 
 @app.get("/info")
 def info():
@@ -262,7 +478,7 @@ def info():
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
     .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
     .hero{width:100%;border-radius:12px;border:1px solid var(--line);display:none}
-    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
+    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:#64748b;font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
   </style>
 </head>
 <body>
@@ -276,7 +492,6 @@ def info():
     </header>
 
     <div class="grid">
-      <!-- COLUNA ESQUERDA: Imagem + fatos -->
       <section class="card">
         <img id="hero" class="hero" alt="Foto ilustrativa da pimenta"/>
         <div class="row" style="justify-content:space-between;align-items:center; margin-top:8px">
@@ -287,7 +502,6 @@ def info():
         <div id="facts" class="facts" style="margin-top:8px"></div>
       </section>
 
-      <!-- COLUNA DIREITA: “Chat” leve -->
       <aside class="card">
         <strong>Assistente</strong>
         <div class="chips" id="chips">
@@ -309,12 +523,9 @@ def info():
   <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
 
 <script>
-const API = window.location.origin;
 const qs = new URLSearchParams(location.search);
 const pepper = qs.get("pepper") || "";
-
-let KB = null;     // base completa (JSON)
-let DOC = null;    // doc da pimenta atual
+let KB = null, DOC = null;
 
 function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text) e.textContent=text; return e; }
 function scrollToEnd(){ const box=document.getElementById('messages'); box.scrollTop = box.scrollHeight; }
@@ -323,17 +534,13 @@ async function loadKB(){
   try{ const r = await fetch("/static/pepper_info.json", {cache:"no-store"}); KB = await r.json(); }
   catch{ KB = {}; }
 }
-
 function pickDoc(name){
   if(!KB) return null;
   const keys = Object.keys(KB);
   let k = keys.find(x => x.toLowerCase() === (name||"").toLowerCase());
-  if(!k && name){
-    k = keys.find(x => (name.toLowerCase().includes(x.toLowerCase()) || x.toLowerCase().includes(name.toLowerCase())));
-  }
+  if(!k && name){ k = keys.find(x => (name.toLowerCase().includes(x.toLowerCase()) || x.toLowerCase().includes(name.toLowerCase()))); }
   return k ? KB[k] : null;
 }
-
 function rangeLabel(shu){
   if(!shu) return "desconhecida";
   const n = Number(String(shu).replace(/[^0-9]/g,""));
@@ -344,7 +551,6 @@ function rangeLabel(shu){
   if(n < 200000) return "alta";
   return "muito alta";
 }
-
 function renderDoc(){
   const title = document.getElementById('title');
   const pName = document.getElementById('pepperName');
@@ -366,19 +572,11 @@ function renderDoc(){
   title.textContent = "Mais sobre: " + nome;
   pName.textContent = nome;
   desc.textContent  = DOC.descricao || "—";
-  if(DOC.scoville){
-    pill.textContent = "SHU: " + DOC.scoville + " (" + rangeLabel(DOC.scoville) + ")";
-  }else{
-    pill.textContent = "SHU: —";
-  }
+  if(DOC.scoville){ pill.textContent = "SHU: " + DOC.scoville + " (" + rangeLabel(DOC.scoville) + ")"; }
+  else{ pill.textContent = "SHU: —"; }
 
-  // imagem
-  if(DOC.imagem){
-    hero.src = DOC.imagem;
-    hero.style.display = "block";
-  }else{
-    hero.style.display = "none";
-  }
+  if(DOC.imagem){ hero.src = DOC.imagem; hero.style.display = "block"; }
+  else{ hero.style.display = "none"; }
 
   const items = [];
   if(DOC.usos) items.push(["Usos", DOC.usos]);
@@ -395,7 +593,6 @@ function renderDoc(){
     card.appendChild(h); card.appendChild(p); facts.appendChild(card);
   });
 }
-
 function putMsg(text, me=false){
   const wrap = el("div","msg"+(me?" me":""));
   const b = el("div","bubble"+(me?" me":""), text);
@@ -403,7 +600,6 @@ function putMsg(text, me=false){
   document.getElementById('messages').appendChild(wrap);
   scrollToEnd();
 }
-
 function answer(q){
   if(!DOC){ return "Ainda não tenho dados desta pimenta."; }
   const msg = q.toLowerCase();
@@ -437,7 +633,6 @@ function answer(q){
   }
   return parts.join("\\n\\n");
 }
-
 document.getElementById('btnSend').onclick = () => {
   const input = document.getElementById('inputMsg');
   const q = (input.value || "").trim();
@@ -452,9 +647,11 @@ document.getElementById('chips').addEventListener('click', (e)=>{
   putMsg(q, true);
   putMsg(answer(q), false);
 });
-
 (async function(){
-  await loadKB();
+  try{
+    const r = await fetch("/static/pepper_info.json", {cache:"no-store"});
+    KB = await r.json();
+  }catch{ KB = {}; }
   DOC = pickDoc(pepper) || null;
   renderDoc();
   if(pepper){
@@ -469,249 +666,3 @@ document.getElementById('chips').addEventListener('click', (e)=>{
 </html>
 """
     return HTMLResponse(content=html)
-
-
-
-
-@app.get("/ui")
-def ui():
-    html = r"""
-<!doctype html>
-<html lang="pt-br">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Identificação de Pimentas</title>
-  <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
-  <style>
-    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
-    *{box-sizing:border-box}
-    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
-    .wrap{max-width:980px;margin:auto;padding:20px 14px 72px}
-    header{display:flex;align-items:center;gap:10px}
-    header h1{font-size:22px;margin:0}
-    header small{color:var(--muted)}
-    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
-    @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
-    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
-    .btn[disabled]{opacity:.6;cursor:not-allowed}
-    .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    .tip{color:var(--muted);font-size:13px}
-    .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px}
-    img,video,canvas{max-width:100%;display:block;border-radius:10px}
-    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
-    .status{margin-top:8px;min-height:22px}
-    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <header>
-      <img src="/static/pimenta-logo.png" alt="Logo" width="28" height="28" onerror="this.style.display='none'">
-      <h1>Identificação de Pimentas</h1>
-    </header>
-
-    <div class="grid">
-      <section class="card">
-        <div class="row">
-          <button id="btnPick" class="btn">Escolher imagem</button>
-          <!-- inputs separados para garantir comportamento -->
-          <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
-          <input id="fileCamera"  type="file" accept="image/*" capture="environment" style="display:none"/>
-
-          <button id="btnCam" class="btn">Abrir câmera</button>
-          <button id="btnShot" class="btn" style="display:none">Capturar</button>
-
-          <button id="btnSend" class="btn accent" disabled>Identificar</button>
-          <button id="btnChat" class="btn" style="display:none">Conversar sobre a pimenta</button>
-
-          <span id="chip" class="pill">Conectando…</span>
-        </div>
-        <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
-
-        <div class="row" style="margin-top:10px">
-          <div class="imgwrap" style="flex:1">
-            <small class="tip">Original</small>
-            <video id="video" autoplay playsinline style="display:none"></video>
-            <img id="preview" alt="preview" style="display:none"/>
-            <canvas id="canvas" style="display:none"></canvas>
-          </div>
-          <div class="imgwrap" style="flex:1">
-            <small class="tip">Resultado</small>
-            <img id="annotated" alt="resultado"/>
-          </div>
-        </div>
-
-        <div id="resumo" class="status tip"></div>
-      </section>
-
-      <aside class="card">
-        <div class="row" style="justify-content:space-between">
-          <strong>Resumo</strong>
-          <span id="badgeTime" class="pill">–</span>
-        </div>
-        <div id="textoResumo" class="tip" style="margin-top:8px">Envie uma imagem para começar.</div>
-      </aside>
-    </div>
-  </div>
-
-  <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
-
-<script>
-const API = window.location.origin;
-let currentFile = null;
-let stream = null;
-let lastClass = null;  // classe detectada para o chat
-
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function setStatus(txt){ document.getElementById('chip').textContent = txt; }
-
-async function compressImage(file, maxSide=1024, quality=0.8){
-  return new Promise((resolve,reject)=>{
-    const img = new Image();
-    img.onload=()=>{
-      const scale=Math.min(1, maxSide/Math.max(img.width,img.height));
-      const w=Math.round(img.width*scale), h=Math.round(img.height*scale);
-      const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
-      cv.width=w; cv.height=h; ctx.drawImage(img,0,0,w,h);
-      cv.toBlob(b=>{
-        if(!b) return reject(new Error("compress fail"));
-        resolve(new File([b], file.name||"photo.jpg", {type:"image/jpeg"}));
-      },"image/jpeg",quality);
-    };
-    img.onerror=reject;
-    img.src=URL.createObjectURL(file);
-  });
-}
-
-async function waitReady(){
-  setStatus("Conectando…");
-  try{
-    const r = await fetch(API + "/", {cache:"no-store"});
-    const d = await r.json();
-    if(d.ready){ setStatus("Pronto"); document.getElementById('btnSend').disabled=!currentFile; return; }
-    setStatus("Aquecendo…");
-  }catch(e){ setStatus("Sem conexão, tentando…"); }
-  await sleep(1200); waitReady();
-}
-
-// --------- Entradas de arquivo (separadas) ---------
-const inputGallery = document.getElementById('fileGallery');
-const inputCamera  = document.getElementById('fileCamera');
-
-document.getElementById('btnPick').onclick = () => {
-  inputGallery.value = "";
-  inputGallery.click(); // abre GALERIA/arquivos
-};
-
-inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
-inputCamera.onchange  = () => useLocalFile(inputCamera.files?.[0]);
-
-async function useLocalFile(f){
-  if(!f) return;
-  currentFile = await compressImage(f);
-  document.getElementById('preview').src = URL.createObjectURL(currentFile);
-  document.getElementById('preview').style.display = "block";
-  document.getElementById('video').style.display = "none";
-  document.getElementById('btnSend').disabled = false;
-  document.getElementById('btnChat').style.display = "none";
-  lastClass = null;
-  document.getElementById('resumo').textContent = "";
-  document.getElementById('textoResumo').textContent = "Imagem pronta para envio.";
-}
-
-// --------- Câmera (getUserMedia + fallback inputCamera) ---------
-const btnCam  = document.getElementById('btnCam');
-const btnShot = document.getElementById('btnShot');
-const video   = document.getElementById('video');
-
-btnCam.onclick = async () => {
-  try{
-    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error("no gum");
-    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:"environment"} } });
-    video.srcObject = stream;
-    video.style.display = "block";
-    document.getElementById('preview').style.display = "none";
-    btnShot.style.display = "inline-block";
-    setStatus("Câmera aberta");
-  }catch(e){
-    inputCamera.value = "";   // fallback confiável para WebView
-    inputCamera.click();      // abre câmera nativa via seletor
-  }
-};
-
-btnShot.onclick = () => {
-  const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
-  cv.width=video.videoWidth; cv.height=video.videoHeight;
-  ctx.drawImage(video,0,0);
-  cv.toBlob(async b=>{
-    currentFile = await compressImage(new File([b],"camera.jpg",{type:"image/jpeg"}));
-    document.getElementById('preview').src = URL.createObjectURL(currentFile);
-    document.getElementById('preview').style.display = "block";
-    video.style.display = "none";
-    btnShot.style.display = "none";
-    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-    document.getElementById('btnSend').disabled = false;
-    document.getElementById('btnChat').style.display = "none";
-    lastClass = null;
-    setStatus("Foto capturada");
-  },"image/jpeg",0.92);
-};
-
-// --------- Predição + Chat ---------
-document.getElementById('btnSend').onclick = async () => {
-  if(!currentFile) return;
-  document.getElementById('btnSend').disabled = true;
-  document.getElementById('resumo').textContent = "Enviando...";
-  const t0=performance.now();
-  try{
-    const fd=new FormData(); fd.append("file", currentFile, currentFile.name||"image.jpg");
-    const r=await fetch(API + "/predict", {method:"POST", body:fd});
-    const d=await r.json();
-
-    if(d.ok===false && d.warming_up){ document.getElementById('resumo').textContent="Aquecendo o modelo… tente novamente"; return; }
-    if(d.ok===false){ document.getElementById('resumo').textContent="Erro: " + (d.error||"desconhecido"); return; }
-
-    if(d.image_b64){ document.getElementById('annotated').src = d.image_b64; }
-    else if(d.image_url){ const url = d.image_url.startsWith("http")? d.image_url : (API + d.image_url); document.getElementById('annotated').src = url; }
-
-    const ms=(performance.now()-t0)/1000;
-    document.getElementById('badgeTime').textContent = (d.inference_time_s||ms).toFixed(2) + " s";
-    const resumo = d.top_pred ? `Pimenta: ${d.top_pred.classe} · ${Math.round((d.top_pred.conf||0)*100)}% · Caixas: ${d.num_dets}`
-                              : "Nenhuma pimenta detectada.";
-    document.getElementById('resumo').textContent = resumo;
-    document.getElementById('textoResumo').textContent = "Resultado exibido ao lado.";
-
-    // habilita o Chat com a classe detectada
-    const chatBtn = document.getElementById('btnChat');
-    if(d.top_pred && d.top_pred.classe){
-      lastClass = d.top_pred.classe;
-      chatBtn.style.display = "inline-block";
-      const base = "https://huggingface.co/spaces/bulipucca/pimentas-chat";
-      const link = base + "?pepper=" + encodeURIComponent(lastClass) + "&from=detector";
-      chatBtn.onclick = () => {
-        // tenta abrir em nova aba; se o webview bloquear, usa mesma aba
-        try{ window.open(link, "_blank"); } catch(e){ location.href = link; }
-      };
-    }else{
-      chatBtn.style.display = "none";
-      lastClass = null;
-    }
-  }catch(e){
-    document.getElementById('resumo').textContent = "Falha ao chamar a API.";
-  }finally{
-    document.getElementById('btnSend').disabled = false;
-  }
-};
-
-waitReady();
-</script>
-</body>
-</html>
-"""
-    return HTMLResponse(content=html)
-
-
-

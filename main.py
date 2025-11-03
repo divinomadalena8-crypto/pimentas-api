@@ -224,6 +224,255 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 from fastapi.responses import HTMLResponse
 
+from fastapi.responses import HTMLResponse
+
+@app.get("/info")
+def info():
+    html = r"""
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Mais sobre a pimenta</title>
+  <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
+  <style>
+    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
+    *{box-sizing:border-box}
+    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
+    .wrap{max-width:980px;margin:auto;padding:20px 14px 72px}
+    header{display:flex;align-items:center;gap:10px}
+    header h1{font-size:22px;margin:0}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+    @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .tip{color:var(--muted);font-size:13px}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
+    .facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    @media(min-width:700px){.facts{grid-template-columns:repeat(3,minmax(0,1fr))}}
+    .fact{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff}
+    .messages{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff;height:300px;overflow:auto}
+    .msg{margin:6px 0;display:flex}
+    .msg.me{justify-content:flex-end}
+    .bubble{max-width:80%;padding:8px 10px;border-radius:12px;border:1px solid var(--line)}
+    .bubble.me{background:#eef2ff;border-color:#c7d2fe}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
+    .hero{width:100%;border-radius:12px;border:1px solid var(--line);display:none}
+    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/static/pimenta-logo.png" alt="Logo" width="28" height="28" onerror="this.style.display='none'">
+      <h1 id="title">Mais sobre a pimenta</h1>
+      <div style="margin-left:auto" class="row">
+        <button class="btn" onclick="location.href='/ui'">← Voltar</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- COLUNA ESQUERDA: Imagem + fatos -->
+      <section class="card">
+        <img id="hero" class="hero" alt="Foto ilustrativa da pimenta"/>
+        <div class="row" style="justify-content:space-between;align-items:center; margin-top:8px">
+          <strong id="pepperName">—</strong>
+          <span id="scovillePill" class="pill" title="Unidades Scoville (SHU)">SHU: —</span>
+        </div>
+        <p id="descricao" class="tip" style="margin-top:8px">Carregando informações…</p>
+        <div id="facts" class="facts" style="margin-top:8px"></div>
+      </section>
+
+      <!-- COLUNA DIREITA: “Chat” leve -->
+      <aside class="card">
+        <strong>Assistente</strong>
+        <div class="chips" id="chips">
+          <span class="chip" data-q="O que é essa pimenta?">O que é?</span>
+          <span class="chip" data-q="Qual a ardência?">Ardência (SHU)</span>
+          <span class="chip" data-q="Como usar em receitas?">Usos/receitas</span>
+          <span class="chip" data-q="Como armazenar/conservar?">Conservação</span>
+          <span class="chip" data-q="Existe substituição?">Substituições</span>
+        </div>
+        <div id="messages" class="messages" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="inputMsg" class="btn" style="flex:1;text-align:left;font-weight:400" placeholder="Pergunte algo (ex.: Como armazenar?)"/>
+          <button id="btnSend" class="btn accent">Enviar</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
+
+<script>
+const API = window.location.origin;
+const qs = new URLSearchParams(location.search);
+const pepper = qs.get("pepper") || "";
+
+let KB = null;     // base completa (JSON)
+let DOC = null;    // doc da pimenta atual
+
+function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text) e.textContent=text; return e; }
+function scrollToEnd(){ const box=document.getElementById('messages'); box.scrollTop = box.scrollHeight; }
+
+async function loadKB(){
+  try{ const r = await fetch("/static/pepper_info.json", {cache:"no-store"}); KB = await r.json(); }
+  catch{ KB = {}; }
+}
+
+function pickDoc(name){
+  if(!KB) return null;
+  const keys = Object.keys(KB);
+  let k = keys.find(x => x.toLowerCase() === (name||"").toLowerCase());
+  if(!k && name){
+    k = keys.find(x => (name.toLowerCase().includes(x.toLowerCase()) || x.toLowerCase().includes(name.toLowerCase())));
+  }
+  return k ? KB[k] : null;
+}
+
+function rangeLabel(shu){
+  if(!shu) return "desconhecida";
+  const n = Number(String(shu).replace(/[^0-9]/g,""));
+  if(!isFinite(n)) return String(shu);
+  if(n < 2500) return "suave";
+  if(n < 10000) return "baixa";
+  if(n < 50000) return "média";
+  if(n < 200000) return "alta";
+  return "muito alta";
+}
+
+function renderDoc(){
+  const title = document.getElementById('title');
+  const pName = document.getElementById('pepperName');
+  const desc  = document.getElementById('descricao');
+  const pill  = document.getElementById('scovillePill');
+  const facts = document.getElementById('facts');
+  const hero  = document.getElementById('hero');
+
+  if(!DOC){
+    title.textContent = "Mais sobre a pimenta";
+    pName.textContent = pepper || "Pimenta (não identificada)";
+    desc.textContent  = "Não encontrei informações detalhadas desta pimenta no arquivo local.";
+    pill.textContent  = "SHU: —";
+    hero.style.display = "none";
+    facts.innerHTML   = "";
+    return;
+  }
+  const nome = DOC.nome || pepper || "Pimenta";
+  title.textContent = "Mais sobre: " + nome;
+  pName.textContent = nome;
+  desc.textContent  = DOC.descricao || "—";
+  if(DOC.scoville){
+    pill.textContent = "SHU: " + DOC.scoville + " (" + rangeLabel(DOC.scoville) + ")";
+  }else{
+    pill.textContent = "SHU: —";
+  }
+
+  // imagem
+  if(DOC.imagem){
+    hero.src = DOC.imagem;
+    hero.style.display = "block";
+  }else{
+    hero.style.display = "none";
+  }
+
+  const items = [];
+  if(DOC.usos) items.push(["Usos", DOC.usos]);
+  if(DOC.receitas) items.push(["Receitas", DOC.receitas]);
+  if(DOC.conservacao) items.push(["Conservação", DOC.conservacao]);
+  if(DOC.substituicoes || DOC.substituicoes_sugeridas) items.push(["Substituições", DOC.substituicoes || DOC.substituicoes_sugeridas]);
+  if(DOC.origem) items.push(["Origem", DOC.origem]);
+
+  facts.innerHTML = "";
+  items.forEach(([k,v])=>{
+    const card = el("div","fact");
+    const h = el("div",null,k); h.style.fontWeight="600";
+    const p = el("div","tip", typeof v==="string" ? v : JSON.stringify(v,null,2));
+    card.appendChild(h); card.appendChild(p); facts.appendChild(card);
+  });
+}
+
+function putMsg(text, me=false){
+  const wrap = el("div","msg"+(me?" me":""));
+  const b = el("div","bubble"+(me?" me":""), text);
+  wrap.appendChild(b);
+  document.getElementById('messages').appendChild(wrap);
+  scrollToEnd();
+}
+
+function answer(q){
+  if(!DOC){ return "Ainda não tenho dados desta pimenta."; }
+  const msg = q.toLowerCase();
+  const parts = [];
+  if(/ard[eê]ncia|pic[aâ]ncia|shu/.test(msg)){
+    if(DOC.scoville){ parts.push(`Ardência (SHU): ${DOC.scoville} — ${rangeLabel(DOC.scoville)}.`); }
+    else parts.push("Não há registro de SHU nesta base.");
+  }
+  if(/usar|receita|molho|chutney|salsa|prato|culin[aá]ria/.test(msg)){
+    if(DOC.usos || DOC.receitas){
+      if(DOC.usos) parts.push(`Usos: ${DOC.usos}`);
+      if(DOC.receitas) parts.push(`Receitas: ${DOC.receitas}`);
+    } else parts.push("Sem sugestões de uso/receitas registradas.");
+  }
+  if(/armazenar|conservar|conserva[cç][aã]o|guardar|dur[aá]vel/.test(msg)){
+    if(DOC.conservacao) parts.push(`Conservação: ${DOC.conservacao}`);
+    else parts.push("Sem orientações de conservação registradas.");
+  }
+  if(/substitu/i.test(msg)){
+    const s = DOC.substituicoes || DOC.substituicoes_sugeridas;
+    parts.push(s ? `Substituições: ${s}` : "Sem substituições sugeridas.");
+  }
+  if(/origem|cultivo|plantio|hist[oó]ria/.test(msg)){
+    parts.push(DOC.origem ? `Origem: ${DOC.origem}` : "Sem dados de origem registrados.");
+  }
+  if(!parts.length){
+    const nome = DOC.nome || pepper || "pimenta";
+    parts.push(`Sobre ${nome}: ${DOC.descricao || "sem descrição."}`);
+    if(DOC.scoville) parts.push(`Ardência (SHU): ${DOC.scoville} (${rangeLabel(DOC.scoville)}).`);
+    parts.push("Você pode perguntar sobre ardência, usos/receitas, conservação, substituições ou origem.");
+  }
+  return parts.join("\\n\\n");
+}
+
+document.getElementById('btnSend').onclick = () => {
+  const input = document.getElementById('inputMsg');
+  const q = (input.value || "").trim();
+  if(!q) return;
+  input.value = "";
+  putMsg(q, true);
+  putMsg(answer(q), false);
+};
+document.getElementById('chips').addEventListener('click', (e)=>{
+  const t = e.target.closest('.chip'); if(!t) return;
+  const q = t.getAttribute('data-q');
+  putMsg(q, true);
+  putMsg(answer(q), false);
+});
+
+(async function(){
+  await loadKB();
+  DOC = pickDoc(pepper) || null;
+  renderDoc();
+  if(pepper){
+    putMsg(`Você selecionou: ${pepper}`, true);
+    putMsg("O que você quer saber? (Ex.: ardência, usos/receitas, conservação, substituições, origem)");
+  }else{
+    putMsg("Qual pimenta você deseja saber mais? Volte e identifique uma imagem, ou informe o nome na sua pergunta.");
+  }
+})();
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+
+
 @app.get("/ui")
 def ui():
     html = r"""
@@ -463,5 +712,6 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
+
 
 

@@ -1,13 +1,13 @@
-# main.py — API de detecção (YOLOv8) + UI leve (identificação + “Mais informações”)
-# - Inicialização rápida; modelo baixa/carrega em thread (evita 502 no Render Free)
-# - /predict sempre pode devolver imagem anotada (RETURN_IMAGE=True)
-# - Anotadas salvas em /static/annotated com URL relativa (funciona em WebView)
-# - /ui (claro, sem arrastar/soltar e sem JSON bruto)
-# - /info (mesmo visual) lê static/pepper_info.json e mostra fatos + “chat” simples
-# - Suporte a MODEL_URL (HF/HTTP direto) e HF_TOKEN (repositório privado)
+# main.py — API de detecção (YOLOv8) + UI clara (Identificação + “Mais informações”)
+# - Modelo baixa/carrega em thread (startup rápido no Render Free)
+# - /predict devolve imagem anotada (PNG) + URL relativa e/ou base64
+# - /ui: escolhe da galeria OU abre câmera; exibe anotada só quando existir
+# - /info: lê static/pepper_info.json e mostra fatos + “chat” simples
+# - Botão “Mais informações” abre /info NA MESMA ABA (sem redirecionar para HF)
+# - Cache desativado nas páginas HTML para evitar versão antiga
 
 import os, io, time, threading, base64, requests, uuid
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 # Reduz overhead de threads BLAS no CPU free
@@ -36,7 +36,7 @@ MODEL_PATH = (
     else "best.pt"
 )
 
-# Presets internos (não exibimos no UI)
+# Presets internos (não exibidos)
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
     "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=4),
@@ -56,7 +56,7 @@ STATIC_DIR = os.path.join(os.getcwd(), "static")
 ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
 os.makedirs(ANNOT_DIR, exist_ok=True)
 
-# Monta /static (apenas 1 vez)
+# Monta /static (apenas 1x)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ LOAD_ERR = None
 # AUX
 # ---------------------------------------------------------------------------
 def ensure_model_file():
-    """Baixa o arquivo do modelo para MODEL_PATH, se necessário."""
+    """Baixa o arquivo do modelo em MODEL_PATH, se necessário."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
@@ -85,8 +85,8 @@ def ensure_model_file():
                     f.write(chunk)
     print("[init] Download concluído:", MODEL_PATH)
 
-def to_b64_png(np_bgr: np.ndarray) -> str | None:
-    """Converte ndarray BGR em dataURL PNG base64 (para render imediato)."""
+def to_b64_png(np_bgr: np.ndarray) -> Optional[str]:
+    """Converte ndarray BGR em dataURL PNG base64 (render imediato)."""
     try:
         rgb = np_bgr[:, :, ::-1]
         buf = io.BytesIO()
@@ -103,7 +103,7 @@ def background_load():
         ensure_model_file()
         m = YOLO(MODEL_PATH)
         try:
-            m.fuse()  # ignora se não for aplicável (ex.: ONNX)
+            m.fuse()  # ignora se não suportado (ex.: ONNX)
         except Exception:
             pass
         model = m
@@ -202,7 +202,7 @@ async def predict(file: UploadFile = File(...)):
                 fpath = os.path.join(ANNOT_DIR, fname)
                 Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
                 image_url = f"/static/annotated/{fname}"  # relativa (ok em WebView)
-                image_b64 = to_b64_png(annotated)         # base64 (fallback imediato)
+                image_b64 = to_b64_png(annotated)         # base64 (fallback)
 
             top = max(preds, key=lambda p: p["conf"]) if preds else None
             return JSONResponse({
@@ -300,7 +300,7 @@ def ui():
           </div>
           <div class="imgwrap" style="flex:1">
             <small class="tip">Resultado</small>
-            <img id="annotated" alt="resultado"/>
+            <img id="annotated" alt="Resultado" style="display:none"/>
           </div>
         </div>
 
@@ -322,6 +322,7 @@ def ui():
 <script>
 const API = window.location.origin;
 let currentFile = null, stream = null, lastClass = null;
+const annotated = document.getElementById('annotated');
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(t){ document.getElementById('chip').textContent = t; }
@@ -361,8 +362,14 @@ document.getElementById('btnPick').onclick = () => { inputGallery.value=""; inpu
 inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
 inputCamera.onchange  = () => useLocalFile(inputCamera.files?.[0]);
 
+function resetAnnotated(){
+  annotated.style.display = "none";
+  annotated.removeAttribute('src');
+}
+
 async function useLocalFile(f){
   if(!f) return;
+  resetAnnotated();
   currentFile = await compressImage(f);
   document.getElementById('preview').src = URL.createObjectURL(currentFile);
   document.getElementById('preview').style.display = "block";
@@ -379,18 +386,21 @@ const btnCam=document.getElementById('btnCam'), btnShot=document.getElementById(
 btnCam.onclick = async () => {
   try{
     if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error();
+    resetAnnotated();
     stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:"environment"} } });
     video.srcObject = stream; video.style.display="block";
     document.getElementById('preview').style.display="none";
     btnShot.style.display="inline-block"; setStatus("Câmera aberta");
   }catch{
-    inputCamera.value=""; inputCamera.click(); // fallback para WebView/navegadores restritos
+    // WebViews que não permitem getUserMedia: força seletor de câmera nativa
+    inputCamera.value=""; inputCamera.click();
   }
 };
 btnShot.onclick = () => {
   const cv=document.getElementById('canvas'), ctx=cv.getContext('2d');
   cv.width=video.videoWidth; cv.height=video.videoHeight; ctx.drawImage(video,0,0);
   cv.toBlob(async b=>{
+    resetAnnotated();
     currentFile = await compressImage(new File([b],"camera.jpg",{type:"image/jpeg"}));
     document.getElementById('preview').src = URL.createObjectURL(currentFile);
     document.getElementById('preview').style.display="block";
@@ -415,8 +425,14 @@ document.getElementById('btnSend').onclick = async () => {
     if(d.ok===false && d.warming_up){ document.getElementById('resumo').textContent="Aquecendo o modelo… tente novamente"; return; }
     if(d.ok===false){ document.getElementById('resumo').textContent="Erro: " + (d.error||"desconhecido"); return; }
 
-    if(d.image_b64){ document.getElementById('annotated').src = d.image_b64; }
-    else if(d.image_url){ const url = d.image_url.startsWith("http")? d.image_url : (API + d.image_url); document.getElementById('annotated').src = url; }
+    // seta imagem anotada (preferir base64; fallback para URL)
+    if (d.image_b64) {
+      annotated.src = d.image_b64;
+    } else if (d.image_url) {
+      annotated.src = new URL(d.image_url, location.origin).href;
+    }
+    annotated.onerror = () => { if (d.image_b64) annotated.src = d.image_b64; };
+    annotated.style.display = "block";
 
     const ms=(performance.now()-t0)/1000;
     document.getElementById('badgeTime').textContent = (d.inference_time_s||ms).toFixed(2) + " s";
@@ -431,15 +447,18 @@ document.getElementById('btnSend').onclick = async () => {
       chatBtn.textContent = "Mais informações";
       chatBtn.onclick = () => { location.href = "/info?pepper=" + encodeURIComponent(lastClass); };
     }else{ chatBtn.style.display="none"; lastClass=null; }
-  }catch{ document.getElementById('resumo').textContent = "Falha ao chamar a API."; }
-  finally{ document.getElementById('btnSend').disabled = false; }
+  }catch{
+    document.getElementById('resumo').textContent = "Falha ao chamar a API.";
+  }finally{
+    document.getElementById('btnSend').disabled = false;
+  }
 };
 waitReady();
 </script>
 </body>
 </html>
 """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/info")
@@ -665,4 +684,4 @@ document.getElementById('chips').addEventListener('click', (e)=>{
 </body>
 </html>
 """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})

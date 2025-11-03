@@ -4,6 +4,9 @@
 # - Salva PNG em /static/annotated e devolve image_url (RELATIVA)
 # - Suporte a HF_TOKEN para repositório privado (Hugging Face)
 
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 import os, io, time, threading, base64, requests, uuid
 from typing import List
 from urllib.parse import urlparse
@@ -460,4 +463,5 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
+
 

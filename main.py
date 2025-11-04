@@ -186,7 +186,7 @@ def ui():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Identificação de Pimentas LOLOLOLO</title>
+<title><center>Identificação de Pimentas LOLOLOLO S2</center></title>
 <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
 <style>
 :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
@@ -528,3 +528,4 @@ function renderDoc(){
 </html>
 """
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+

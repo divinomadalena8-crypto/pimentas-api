@@ -21,8 +21,8 @@
     "origem": "Brasil (variedade local de Capsicum chinense).",
     "imagem": "/static/peppers/Bode.png"
   },
-  "Chili-Pepper": {
-    "nome": "Chili",
+  "Chilli-Pepper": {
+    "nome": "Chilli",
     "scoville": "5.000–50.000",
     "descricao": "Termo genérico para pimentas de ardência baixa a média em culinárias mexicana/tex-mex.",
     "usos": "Chili con carne, salsas, tacos, picles e molhos de mesa.",
@@ -30,7 +30,7 @@
     "conservacao": "Refrigerar 5–7 dias; pode ser desidratada.",
     "substituicoes": "Dedo-de-moça ou Jalapeño (conforme a receita).",
     "origem": "Américas; popularizada mundialmente.",
-    "imagem": "/static/peppers/Chili.png"
+    "imagem": "/static/peppers/Chilli.png"
   },
   "Fidalga-Pepper": {
     "nome": "Fidalga",

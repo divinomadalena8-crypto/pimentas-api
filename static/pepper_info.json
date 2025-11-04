@@ -86,5 +86,8 @@
     "substituicoes": "Biquinho (doce/suave).",
     "origem": "Sudeste do Brasil.",
     "imagem": "/static/peppers/Cambuci.jpng"
+  },
+  "Chili-Pepper": {
+    "alias_de": "Chilli-Pepper"
   }
 }

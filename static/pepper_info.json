@@ -1,5 +1,5 @@
 {
-  "Biquinho-Pepper": {
+  "Biquinho": {
     "nome": "Biquinho",
     "scoville": "0–1.000",
     "descricao": "Aromática e muito suave (quase sem ardor), formato de gota. Ideal para sabor sem picância.",
@@ -10,7 +10,7 @@
     "origem": "Seleções brasileiras de Capsicum chinense.",
     "imagem": "/static/peppers/biquinho-pepper.jpg"
   },
-  "Bode-Pepper": {
+  "Bode": {
     "nome": "Bode",
     "scoville": "50.000–100.000",
     "descricao": "Pequena, perfumada e picante; muito comum no Centro-Oeste e Nordeste do Brasil.",
@@ -32,7 +32,7 @@
     "origem": "Américas; popularizada mundialmente.",
     "imagem": "/static/peppers/chili-pepper.jpg"
   },
-  "Fidalga-Pepper": {
+  "Fidalga": {
     "nome": "Fidalga",
     "scoville": "50.000–100.000",
     "descricao": "Variedade aromática e picante (C. chinense), com notas frutadas.",
@@ -54,7 +54,7 @@
     "origem": "Caribe/México (Yucatán).",
     "imagem": "/static/peppers/habanero-pepper.jpg"
   },
-  "Jalapeño-Pepper": {
+  "Jalapeño": {
     "nome": "Jalapeño",
     "scoville": "2.500–8.000",
     "descricao": "Ardência baixa a média, polpa espessa. Quando defumada e seca, vira chipotle.",
@@ -65,7 +65,7 @@
     "origem": "México.",
     "imagem": "/static/peppers/jalapeno-pepper.jpg"
   },
-  "ScotchBonnet-Pepper": {
+  "ScotchBonnet": {
     "nome": "Scotch Bonnet",
     "scoville": "100.000–350.000",
     "descricao": "Muito picante, típica do Caribe, frutada como o Habanero.",
@@ -76,7 +76,7 @@
     "origem": "Caribe (Jamaica e região).",
     "imagem": "/static/peppers/scotchbonnet-pepper.jpg"
   },
-  "Cambuci-Pepper": {
+  "Cambuci": {
     "nome": "Cambuci",
     "scoville": "0–1.000",
     "descricao": "Formato de sino/chapéu, muito suave e aromática; conhecida como chapéu-de-frade.",

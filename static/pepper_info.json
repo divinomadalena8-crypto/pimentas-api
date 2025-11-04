@@ -1,5 +1,5 @@
 {
-  "Biquinho": {
+  "Biquinho-Pepper": {
     "nome": "Biquinho",
     "scoville": "0–1.000",
     "descricao": "Aromática e muito suave (quase sem ardor), formato de gota. Ideal para sabor sem picância.",
@@ -10,7 +10,7 @@
     "origem": "Seleções brasileiras de Capsicum chinense.",
     "imagem": "/static/peppers/Biquinho.png"
   },
-  "Bode": {
+  "Bode-Pepper": {
     "nome": "Bode",
     "scoville": "50.000–100.000",
     "descricao": "Pequena, perfumada e picante; muito comum no Centro-Oeste e Nordeste do Brasil.",

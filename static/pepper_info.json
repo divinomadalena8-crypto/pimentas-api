@@ -1,5 +1,5 @@
 {
-  "Biquinho-Pepper": {
+  "Biquinho": {
     "nome": "Biquinho",
     "scoville": "0–1.000",
     "descricao": "Aromática e muito suave (quase sem ardor), formato de gota. Ideal para sabor sem picância.",
@@ -8,7 +8,7 @@
     "conservacao": "Refrigerar fresca por 5–7 dias; em conserva dura meses.",
     "substituicoes": "Cambuci (também muito suave).",
     "origem": "Seleções brasileiras de Capsicum chinense.",
-    "imagem": "/static/peppers/biquinho-pepper.jpg"
+    "imagem": "/static/peppers/Biquinho.png"
   },
   "Bode-Pepper": {
     "nome": "Bode",

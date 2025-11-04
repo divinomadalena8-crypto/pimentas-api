@@ -1,9 +1,8 @@
 # main.py — API e UI de Identificação de Pimentas (YOLOv8) para Render
-# - Carrega o modelo em background (startup rápido)
-# - /ui: interface clara, sem painel “Resumo”, imagens maiores, câmera+galeria
-# - /info: tela de chat simples (sem SHU visível)
-# - /kb.json: serve pepper_info.json local ou baixa do KB_URL
-# - /predict: retorna boxes + imagem anotada (base64 e URL relativa)
+# Correções:
+# - /info: chat simples (sem SHU), quebras de linha corretas, e normalização chili/chilli
+# - /ui: layout mobile sem rolagem horizontal e imagens maiores
+# - /kb.json: lê static/pepper_info.json ou baixa do KB_URL
 
 import os, io, time, threading, base64, requests, uuid
 from typing import List
@@ -17,17 +16,15 @@ from ultralytics import YOLO
 from PIL import Image
 import numpy as np
 
-# ===================== APP & STATIC =====================
-
 app = FastAPI(title="API Pimentas YOLOv8")
 
+# ---------------------- STATIC ----------------------
 STATIC_DIR = os.path.join(os.getcwd(), "static")
 ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
 os.makedirs(ANNOT_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ===================== CONFIG =====================
-
+# ---------------------- CONFIG ----------------------
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"
@@ -48,30 +45,28 @@ PRESETS = {
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
+RETURN_IMAGE = True
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
+# JSON com as infos das pimentas (fallback remoto se não existir local)
 KB_URL = os.getenv(
     "KB_URL",
     "https://raw.githubusercontent.com/divinomadalena8-crypto/pimentas-assets/main/pepper_info.json"
 ).strip()
 
-RETURN_IMAGE = True
-
-# ===================== ESTADO GLOBAL =====================
-
+# ---------------------- ESTADO ----------------------
 model = None
 labels = {}
 READY = False
 LOAD_ERR = None
 
-# ===================== UTILS =====================
-
+# ---------------------- UTILS ----------------------
 def ensure_model_file():
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
-        raise RuntimeError("Defina MODEL_URL com link direto do modelo (.pt ou .onnx).")
+        raise RuntimeError("Defina MODEL_URL (.pt/.onnx).")
     print(f"[init] Baixando modelo: {MODEL_URL}")
     with requests.get(MODEL_URL, headers=REQ_HEADERS, stream=True, timeout=600) as r:
         r.raise_for_status()
@@ -109,14 +104,12 @@ def background_load():
         READY = False
         print("[init] ERRO ao carregar modelo:", LOAD_ERR)
 
-# ===================== LIFECYCLE =====================
-
+# ---------------------- LIFECYCLE ----------------------
 @app.on_event("startup")
 def on_startup():
     threading.Thread(target=background_load, daemon=True).start()
 
-# ===================== ROTAS DE STATUS =====================
-
+# ---------------------- STATUS ----------------------
 @app.get("/")
 def health():
     return {
@@ -143,8 +136,7 @@ def warmup():
                       max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
-# ===================== PREDICT =====================
-
+# ---------------------- PREDICT ----------------------
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not READY:
@@ -154,7 +146,7 @@ async def predict(file: UploadFile = File(...)):
     try:
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
-        image.thumbnail((1024, 1024))  # acelera em CPU mantendo proporção
+        image.thumbnail((1024, 1024))  # acelera mantendo proporção
 
         res = model.predict(
             image,
@@ -214,14 +206,10 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
 
-# ===================== KB (JSON de pimentas) =====================
-
+# ---------------------- KB (JSON) ----------------------
 @app.get("/kb.json")
 def kb_json():
-    """
-    Tenta servir pepper_info.json local (static/pepper_info.json).
-    Se não existir, baixa do KB_URL (GitHub raw, por exemplo).
-    """
+    """Serve pepper_info.json (local ou remoto)."""
     local_path = os.path.join(STATIC_DIR, "pepper_info.json")
     try:
         if os.path.exists(local_path):
@@ -235,8 +223,7 @@ def kb_json():
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"error": "pepper_info.json não encontrado"}, status_code=404)
 
-# ===================== UI: INFO (chat simples) =====================
-
+# ---------------------- UI: CHAT (/info) ----------------------
 @app.get("/info")
 def info():
     html = r"""
@@ -250,8 +237,8 @@ def info():
   <style>
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
-    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.5 system-ui,-apple-system,Segoe UI,Roboto }
-    .wrap{max-width:980px;margin:auto;padding:20px 14px 72px}
+    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.5 system-ui,-apple-system,Segoe UI,Roboto; overflow-x:hidden }
+    .wrap{max-width:980px; width:min(980px,100%); margin:auto; padding:16px 12px 72px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:20px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
@@ -260,7 +247,7 @@ def info():
     .messages{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;height:60vh;min-height:360px;overflow:auto}
     .msg{margin:8px 0;display:flex}
     .msg.me{justify-content:flex-end}
-    .bubble{max-width:80%;padding:10px 12px;border-radius:12px;border:1px solid var(--line)}
+    .bubble{max-width:80%;padding:10px 12px;border-radius:12px;border:1px solid var(--line); white-space:pre-wrap}
     .bubble.me{background:#eef2ff;border-color:#c7d2fe}
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
     .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
@@ -308,8 +295,6 @@ let DOC = null;
 
 function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text) e.textContent=text; return e; }
 function putMsg(text, me=false){ const wrap=el("div","msg"+(me?" me":"")); wrap.appendChild(el("div","bubble"+(me?" me":""), text)); document.getElementById('messages').appendChild(wrap); const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
-
-// normaliza: remove acentos, espaços, pontuação, deixa minúsculo
 function norm(s){ return (s||"").normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,''); }
 
 async function loadKB(){
@@ -319,14 +304,27 @@ async function loadKB(){
 function pickDoc(name){
   if(!KB) return null;
   const keys = Object.keys(KB);
-  const nn = norm(name);
-  let key = keys.find(k => norm(k) === nn);
-  if(!key){
-    key = keys.find(k => norm(k).includes(nn) || nn.includes(norm(k)));
+  const normMap = Object.fromEntries(keys.map(k => [norm(k), k]));
+  const n0 = norm(name);
+
+  // match direto
+  if(n0 in normMap) return KB[normMap[n0]];
+
+  // variações comuns: chilli <-> chili, hyphens etc
+  const variants = [
+    n0.replace(/chilli/g, "chili"),
+    n0.replace(/chili/g, "chilli"),
+    n0.replace(/scotchbonnetpepper/g, "scotchbonnet-pepper"),
+  ];
+  for(const v of variants){
+    if(v in normMap) return KB[normMap[v]];
   }
-  let doc = key ? KB[key] : null;
-  if(doc && doc.alias_de){ doc = KB[doc.alias_de] || doc; }
-  return doc;
+
+  // contém/parecido
+  for(const [nk, k] of Object.entries(normMap)){
+    if(n0.includes(nk) || nk.includes(n0)) return KB[k];
+  }
+  return null;
 }
 
 function answer(q){
@@ -354,7 +352,7 @@ function answer(q){
     parts.push(`Sobre ${nome}: ${DOC.descricao || "sem descrição disponível nesta base."}`);
     parts.push("Você pode perguntar sobre usos/receitas, conservação, substituições ou origem.");
   }
-  return parts.join("\\n\\n");
+  return parts.join("\n\n");  // <-- quebras de linha reais
 }
 
 document.getElementById('btnSend').onclick = () => {
@@ -392,8 +390,7 @@ document.getElementById('chips').addEventListener('click', (e)=>{
 """
     return HTMLResponse(content=html)
 
-# ===================== UI: PRINCIPAL (sem painel resumo, imagens maiores) =====================
-
+# ---------------------- UI: INICIAL (/ui) ----------------------
 @app.get("/ui")
 def ui():
     html = r"""
@@ -407,20 +404,24 @@ def ui():
   <style>
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
-    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
-    .wrap{max-width:1040px;margin:auto;padding:20px 14px 72px}
+    html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto; overflow-x:hidden }
+    .wrap{max-width:1040px; width:min(1040px,100%); margin:auto; padding:16px 12px 72px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:22px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
     .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center; width:100%}
     .tip{color:var(--muted);font-size:13px}
-    .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px;flex:1;min-width:260px}
-    img,video,canvas{max-width:100%;display:block;border-radius:10px}
+    .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px;flex:1 1 48%;min-width:260px}
+    img,video,canvas{width:100%;height:auto;display:block;border-radius:10px}
     .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
     .status{margin-top:8px;min-height:22px}
+    @media(max-width:700px){
+      .images{flex-direction:column}
+      .imgwrap{flex:1 1 100%;min-width:0}
+    }
     footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
   </style>
 </head>
@@ -447,7 +448,7 @@ def ui():
       </div>
       <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
 
-      <div class="row" style="margin-top:10px">
+      <div class="row images" style="margin-top:10px">
         <div class="imgwrap">
           <small class="tip">Original</small>
           <video id="video" autoplay playsinline style="display:none"></video>
@@ -543,7 +544,7 @@ btnCam.onclick = async () => {
     setStatus("Câmera aberta");
   }catch(e){
     inputCamera.value = "";
-    inputCamera.click();      // fallback confiável para WebView
+    inputCamera.click();      // fallback nativo (WebView)
   }
 };
 

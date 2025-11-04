@@ -10,7 +10,7 @@
     "origem": "Seleções brasileiras de Capsicum chinense.",
     "imagem": "/static/peppers/Biquinho.png"
   },
-  "Bode-Pepper": {
+  "Bode": {
     "nome": "Bode",
     "scoville": "50.000–100.000",
     "descricao": "Pequena, perfumada e picante; muito comum no Centro-Oeste e Nordeste do Brasil.",
@@ -19,7 +19,7 @@
     "conservacao": "Refrigerar 5–7 dias; ótima para conserva e fermentação.",
     "substituicoes": "Malagueta (perfil semelhante); Habanero (mais frutada e potente).",
     "origem": "Brasil (variedade local de Capsicum chinense).",
-    "imagem": "/static/peppers/bode-pepper.jpg"
+    "imagem": "/static/peppers/Bode.png"
   },
   "Chili-Pepper": {
     "nome": "Chili",
@@ -30,7 +30,7 @@
     "conservacao": "Refrigerar 5–7 dias; pode ser desidratada.",
     "substituicoes": "Dedo-de-moça ou Jalapeño (conforme a receita).",
     "origem": "Américas; popularizada mundialmente.",
-    "imagem": "/static/peppers/chili-pepper.jpg"
+    "imagem": "/static/peppers/Chili.png"
   },
   "Fidalga-Pepper": {
     "nome": "Fidalga",
@@ -41,7 +41,7 @@
     "conservacao": "Refrigerar 5–7 dias; adequada a conserva/fermentação.",
     "substituicoes": "Bode (perfil próximo) ou Habanero (mais frutada).",
     "origem": "Brasil (variedades regionais).",
-    "imagem": "/static/peppers/fidalga-pepper.jpg"
+    "imagem": "/static/peppers/Fidalgar.png"
   },
   "Habanero-Pepper": {
     "nome": "Habanero",
@@ -52,7 +52,7 @@
     "conservacao": "Refrigerar 5–7 dias; congelar picada.",
     "substituicoes": "Scotch Bonnet (similar); Murupi (bem picante).",
     "origem": "Caribe/México (Yucatán).",
-    "imagem": "/static/peppers/habanero-pepper.jpg"
+    "imagem": "/static/peppers/Habanero.png"
   },
   "Jalapeño-Pepper": {
     "nome": "Jalapeño",
@@ -63,7 +63,7 @@
     "conservacao": "Refrigerar 5–7 dias; ótima para picles.",
     "substituicoes": "Dedo-de-moça (mais estreita); Serrano (levemente mais picante).",
     "origem": "México.",
-    "imagem": "/static/peppers/jalapeno-pepper.jpg"
+    "imagem": "/static/peppers/Jalapeno.png"
   },
   "ScotchBonnet-Pepper": {
     "nome": "Scotch Bonnet",
@@ -74,7 +74,7 @@
     "conservacao": "Refrigerar 5–7 dias; boa para conservas/fermentação.",
     "substituicoes": "Habanero (muito próximo).",
     "origem": "Caribe (Jamaica e região).",
-    "imagem": "/static/peppers/scotchbonnet-pepper.jpg"
+    "imagem": "/static/peppers/Scotch.png"
   },
   "Cambuci-Pepper": {
     "nome": "Cambuci",
@@ -85,6 +85,6 @@
     "conservacao": "Refrigerar até 1 semana; pode congelar após pré-preparo.",
     "substituicoes": "Biquinho (doce/suave).",
     "origem": "Sudeste do Brasil.",
-    "imagem": "/static/peppers/cambuci-pepper.jpg"
+    "imagem": "/static/peppers/Cambuci.jpng"
   }
 }

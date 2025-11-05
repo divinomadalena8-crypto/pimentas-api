@@ -1,18 +1,18 @@
 # main.py — API e UI de Identificação de Pimentas (YOLOv8) — Render
 # Recursos:
 # - Modelo carrega em background
-# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes, chips de pimentas no TOPO (cores por nome)
-# - /info: chat simples, chips para alternar entre pimentas sem voltar, composer “grudado” (não some com teclado)
+# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes
+# - /info: chat com menu numérico + perguntas livres e fallback de IA (RAG leve)
 # - /kb.json: serve static/pepper_info.json ou baixa do KB_URL
 # - Normalização de nomes (acentos, hífens, chili↔chilli) + fallback Levenshtein no /info
 # - Rodapé estático (não sobrepõe conteúdo)
 # - max_det configurável por env MAX_DET (opcional)
 
-import os, io, time, threading, base64, requests, uuid
+import os, io, time, threading, base64, requests, uuid, json
 from typing import List
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, Response
+from fastapi import FastAPI, UploadFile, File, Response, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -64,6 +64,8 @@ KB_URL = os.getenv(
     "KB_URL",
     "https://raw.githubusercontent.com/divinomadalena8-crypto/pimentas-assets/main/pepper_info.json"
 ).strip()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()  # opcional
 
 # ---------------------- ESTADO ----------------------
 model = None
@@ -235,6 +237,78 @@ def kb_json():
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"error": "pepper_info.json não encontrado"}, status_code=404)
 
+def _load_kb_dict():
+    local_path = os.path.join(STATIC_DIR, "pepper_info.json")
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    if KB_URL:
+        r = requests.get(KB_URL, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    return {}
+
+# ---------------------- IA (opcional) ----------------------
+@app.post("/ai")
+async def ai(req: Request):
+    """
+    Responde usando apenas o contexto do pepper_info.json.
+    Se não houver OPENAI_API_KEY, devolve resposta neutra (sem erro).
+    """
+    data = await req.json()
+    q = (data.get("q") or "").strip()
+    pepper = (data.get("pepper") or "").strip()
+
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty question"}, status_code=400)
+
+    kb = _load_kb_dict()
+
+    def _norm(s): return ''.join(ch for ch in s.lower() if ch.isalnum())
+    normpep = _norm(pepper)
+    doc = None
+    for k in kb.keys():
+        if _norm(k) == normpep:
+            doc = kb[k]; break
+    if not doc:
+        for k in kb.keys():
+            if normpep in _norm(k) or _norm(k) in normpep:
+                doc = kb[k]; break
+
+    context = json.dumps(doc or {}, ensure_ascii=False)
+
+    if not OPENAI_API_KEY:
+        return JSONResponse({
+            "ok": True,
+            "text": "No momento não tenho mais detalhes sobre essa pimenta além do que está na base local."
+        })
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        system = (
+            "Você é um assistente de culinária especializado em pimentas. "
+            "Responda em português, de forma breve e objetiva. "
+            "Use SOMENTE as informações do CONTEXTO. "
+            "Se a informação não estiver no contexto, diga que não há registro."
+        )
+        user = f"CONTEXTO:\n{context}\n\nPergunta do usuário:\n{q}"
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            max_tokens=250,
+            messages=[
+                {"role":"system","content":system},
+                {"role":"user","content":user}
+            ],
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return JSONResponse({"ok": True, "text": text})
+    except Exception:
+        return JSONResponse({"ok": True, "text": "Não consegui consultar a IA agora."})
+
 # ---------------------- UI: CHAT (/info) ----------------------
 @app.get("/info")
 def info():
@@ -243,7 +317,7 @@ def info():
 <html lang="pt-br">
 <head>
   <meta charset="utf-8"/>
-  <!-- viewport-fit=cover ajuda o layout quando o teclado abre (iOS/WebView) -->
+  <!-- viewport-fit=cover ajuda quando o teclado abre em mobile -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Chat de Pimentas</title>
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
@@ -257,8 +331,9 @@ def info():
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
     .btn{appearance:none;border:1px solid var(--line);background:#fff;color:#0f172a;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .tip{color:var(--muted);font-size:13px}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
 
-    /* Área de mensagens com altura dinâmica (dvh) que respeita teclado */
     .messages{
       border:1px solid var(--line);
       border-radius:12px;
@@ -272,10 +347,7 @@ def info():
     .msg.me{justify-content:flex-end}
     .bubble{max-width:80%;padding:10px 12px;border-radius:12px;border:1px solid var(--line); white-space:pre-wrap}
     .bubble.me{background:#eef2ff;border-color:#c7d2fe}
-    .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
-    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
 
-    /* Barra do compositor fica colada no final do card */
     .composer{
       position: sticky;
       bottom: 0;
@@ -328,10 +400,9 @@ def info():
 
       <div id="messages" class="messages"></div>
 
-      <!-- barra do input “colada” no fim do card -->
       <div class="composer">
         <div style="display:flex;gap:10px;">
-          <input id="inputMsg" class="btn" style="flex:1;text-align:left;font-weight:400" placeholder="Pergunte algo (ex.: como usar?)"/>
+          <input id="inputMsg" class="btn" style="flex:1;text-align:left;font-weight:400" placeholder="Digite 1–6 ou pergunte (ex.: como usar?)"/>
           <button id="btnSend" class="btn" style="background:var(--accent);color:#fff;border-color:var(--accent)">Enviar</button>
         </div>
       </div>
@@ -354,7 +425,6 @@ function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.clas
 function putMsg(text, me=false){ const wrap=el("div","msg"+(me?" me":"")); wrap.appendChild(el("div","bubble"+(me?" me":""), text)); document.getElementById('messages').appendChild(wrap); const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
 function norm(s){ return (s||"").normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,''); }
 
-// --- variações e Levenshtein para robustez do "Chili/Chilli", hífens etc. ---
 function variants(n){
   const vs = new Set([n]);
   vs.add(n.replace(/chilli/g, "chili"));
@@ -391,9 +461,7 @@ function pickDoc(name){
       if(nk.includes(v) || v.includes(nk)) return KB[normMap[nk]];
     }
   }
-  let bestKey = None, best = 1e9;
-  bestKey = None
-  best = 1e9
+  let bestKey = null, best = 1e9;
   for(const nk in normMap){
     const d = lev(n0, nk);
     if(d < best){ best = d; bestKey = nk; }
@@ -401,7 +469,6 @@ function pickDoc(name){
   if(best <= 3) return KB[normMap[bestKey]];
   return null;
 }
-// ---------------------------------------------------------------------------
 
 async function loadKB(){
   try{ const r = await fetch("/kb.json", {cache:"no-store"}); KB = await r.json(); }
@@ -452,7 +519,7 @@ function answer(q){
   return parts.join("\n\n");
 }
 
-/* --- manter o botão Enviar visível quando o teclado abre --- */
+/* manter o botão Enviar visível quando o teclado abre */
 const messages = document.getElementById('messages');
 const composer  = document.querySelector('.composer');
 const input     = document.getElementById('inputMsg');
@@ -462,16 +529,70 @@ function keepComposerVisible(){
 }
 input.addEventListener('focus', ()=> setTimeout(keepComposerVisible, 100));
 window.addEventListener('resize', ()=> setTimeout(keepComposerVisible, 100));
-/* ----------------------------------------------------------- */
 
-document.getElementById('btnSend').onclick = () => {
-  const q = (input.value || "").trim();
+/* --------- MENU estilo WhatsApp --------- */
+const MENU = {
+  "1": "O que é essa pimenta?",
+  "2": "Qual a ardência?",
+  "3": "Como usar em receitas?",
+  "4": "Como armazenar/conservar?",
+  "5": "Existe substituição?",
+  "6": "Qual a origem dessa pimenta?"
+};
+function showMenu(){
+  putMsg(
+`Para qual assunto você deseja atendimento?
+1 – O que é
+2 – Ardência (SHU)
+3 – Usos/Receitas
+4 – Conservação
+5 – Substituições
+6 – Origem
+0 – Mostrar este menu novamente`
+  );
+}
+function normalizeQuestion(q){
+  const t = (q||"").trim();
+  if (t in MENU) return MENU[t];
+  if (t === "0") return "__menu__";
+  return q;
+}
+/* ---------------------------------------- */
+
+document.getElementById('btnSend').onclick = async () => {
+  let q = (input.value || "").trim();
   if(!q) return;
   input.value = "";
+
+  const mapped = normalizeQuestion(q);
+  if (mapped === "__menu__") {
+    putMsg("0", true);
+    showMenu();
+    return;
+  }
+  if (mapped !== q) q = mapped;
+
   putMsg(q, true);
-  putMsg(answer(q), false);
+
+  // regra local
+  let a = answer(q);
+
+  // fallback IA se a resposta for genérica/insuficiente
+  if (/Ainda não tenho dados|Sem .* registrad/.test(a)) {
+    try {
+      const r = await fetch("/ai", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ pepper: (DOC?.nome || pepper || ""), q })
+      });
+      const j = await r.json();
+      if (j && j.ok && j.text) a = j.text;
+    } catch(e) { /* se falhar IA, mantém resposta local */ }
+  }
+  putMsg(a);
   keepComposerVisible();
 };
+
 document.getElementById('chips').addEventListener('click', (e)=>{
   const t = e.target.closest('.chip'); if(!t) return;
   const q = t.getAttribute('data-q');
@@ -481,19 +602,42 @@ document.getElementById('chips').addEventListener('click', (e)=>{
 });
 
 (async function(){
-  await loadKB();
+  try{
+    const r = await fetch("/kb.json", {cache:"no-store"});
+    KB = await r.json();
+  }catch(e){ KB = {}; }
   DOC = pickDoc(pepper) || null;
-  drawAlts();
+
   const title = document.getElementById('title');
   const subtitle = document.getElementById('subtitle');
   if(DOC){
     title.textContent = "Chat: " + (DOC.nome || pepper || "Pimenta");
-    subtitle.textContent = "Pergunte sobre usos, conservação, substituições e origem.";
+    subtitle.textContent = "Digite 1–6 para atalhos ou faça uma pergunta livre.";
   }else{
     title.textContent = "Chat de Pimentas";
-    subtitle.textContent = pepper ? ("Não encontrei dados para: " + pepper) : "Informe uma pimenta via a tela inicial.";
+    subtitle.textContent = pepper ? ("Não encontrei dados para: " + pepper) : "Abra a tela inicial para identificar uma imagem.";
     putMsg("Qual pimenta você deseja saber mais? Volte e identifique uma imagem, ou informe o nome na sua pergunta.");
   }
+
+  // chips para alternar entre pimentas detectadas na mesma imagem
+  const wrap = document.getElementById('altsWrap');
+  const chips = document.getElementById('altsChips');
+  if(alts.length > 1){
+    wrap.style.display = "block";
+    chips.innerHTML = "";
+    alts.forEach(name => {
+      const chip = el("span","chip", name);
+      chip.onclick = () => {
+        const url = "/info?pepper=" + encodeURIComponent(name) +
+                    "&alts=" + encodeURIComponent(alts.join("|"));
+        location.href = url;
+      };
+      chips.appendChild(chip);
+    });
+  }
+
+  // mostra o menu inicial
+  showMenu();
 })();
 </script>
 </body>
@@ -529,8 +673,6 @@ def ui():
     img,video,canvas{width:100%;height:auto;display:block;border-radius:10px}
     .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
     .status{margin-top:8px;min-height:22px}
-    .chips{display:flex;gap:8px;flex-wrap:wrap}
-    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
 
     @media(max-width:700px){
       .images{flex-direction:column}
@@ -554,13 +696,6 @@ def ui():
       <img src="/static/pimenta-logo.png" alt="Logo" width="28" height="28" onerror="this.style.display='none'">
       <h1>Identificação de Pimentas</h1>
     </header>
-
-    <!-- NOVO: seção de chips de pimentas no topo, com cores por nome -->
-    <section class="card">
-      <strong style="display:block;margin-bottom:8px">Conheça as pimentas</strong>
-      <div id="pepperTopChips" class="chips"></div>
-      <p class="tip" style="margin-top:8px">Toque para abrir o chat dessa pimenta — sem precisar identificar uma imagem.</p>
-    </section>
 
     <section class="card" style="margin-top:16px">
       <div class="row">
@@ -606,46 +741,10 @@ def ui():
 const API = window.location.origin;
 let currentFile = null;
 let stream = null;
-let KB = null;
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(txt){ document.getElementById('chip').textContent = txt; }
 
-/* ---- Cores por nome (estáveis): gera HSL a partir do texto ---- */
-function hueFor(name){
-  let h = 0;
-  for (let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) % 360;
-  return h;
-}
-function styleForChip(name){
-  const h = hueFor(name);
-  const bg = `hsl(${h}, 85%, 93%)`;
-  const bd = `hsl(${h}, 60%, 75%)`;
-  return `background:${bg}; border-color:${bd}`;
-}
-
-/* ---- Chips do topo: carrega KB e desenha ---- */
-async function loadKB(){
-  try{
-    const r = await fetch("/kb.json", {cache:"no-store"});
-    KB = await r.json();
-  }catch(e){ KB = {}; }
-}
-function drawTopChips(){
-  const box = document.getElementById('pepperTopChips');
-  box.innerHTML = "";
-  const names = Object.keys(KB || {});
-  names.forEach(n=>{
-    const b = document.createElement('button');
-    b.className = 'chip';
-    b.textContent = n;
-    b.setAttribute('style', styleForChip(n));
-    b.onclick = () => { location.href = "/info?pepper=" + encodeURIComponent(n); };
-    box.appendChild(b);
-  });
-}
-
-/* ---- Compressão de imagem ---- */
 async function compressImage(file, maxSide=1024, quality=0.8){
   return new Promise((resolve,reject)=>{
     const img = new Image();
@@ -713,7 +812,6 @@ btnCam.onclick = async () => {
     btnShot.style.display = "inline-block";
     setStatus("Câmera aberta");
   }catch(e){
-    // Fallback nativo (WebView abre seletor/câmera do SO)
     inputCamera.value = "";
     inputCamera.click();
   }
@@ -759,9 +857,7 @@ document.getElementById('btnSend').onclick = async () => {
                               : "Nenhuma pimenta detectada.";
     document.getElementById('resumo').textContent = resumo;
 
-    // --- classes detectadas (únicas) ---
     const classes = [...new Set((d.preds || []).map(p => p.classe).filter(Boolean))];
-
     const chooser = document.getElementById('chooser');
     const chipsClasses = document.getElementById('chipsClasses');
     const chatBtn = document.getElementById('btnChat');
@@ -773,7 +869,6 @@ document.getElementById('btnSend').onclick = async () => {
         const b = document.createElement('button');
         b.className = 'btn';
         b.textContent = c;
-        b.setAttribute('style', styleForChip(c));
         b.onclick = () => {
           const link = "/info?pepper=" + encodeURIComponent(c) +
                        "&alts=" + encodeURIComponent(classes.join("|"));
@@ -802,11 +897,7 @@ document.getElementById('btnSend').onclick = async () => {
   }
 };
 
-(async function(){
-  await loadKB();
-  drawTopChips();
-  waitReady();
-})();
+waitReady();
 </script>
 </body>
 </html>

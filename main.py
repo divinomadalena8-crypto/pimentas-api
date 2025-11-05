@@ -251,7 +251,16 @@ def info():
     .bubble.me{background:#eef2ff;border-color:#c7d2fe}
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
     .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
-    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
+footer{
+  position: static;           /* << deixa de ser fixo */
+  padding: 12px 14px;
+  background: #fff;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  margin-top: 16px;           /* dá um respiro do conteúdo */
+}
   </style>
 </head>
 <body>
@@ -422,7 +431,16 @@ def ui():
       .images{flex-direction:column}
       .imgwrap{flex:1 1 100%;min-width:0}
     }
-    footer{position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#ffffffd9;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center;backdrop-filter:saturate(140%) blur(6px)}
+footer{
+  position: static;           /* << deixa de ser fixo */
+  padding: 12px 14px;
+  background: #fff;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  margin-top: 16px;           /* dá um respiro do conteúdo */
+}
   </style>
 </head>
 <body>
@@ -610,3 +628,4 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
+

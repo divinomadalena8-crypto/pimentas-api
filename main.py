@@ -1,10 +1,10 @@
 # main.py — API e UI de Identificação de Pimentas (YOLOv8) — Render
 # Recursos:
 # - Modelo carrega em background
-# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes → abre /info com pepper + alts
-# - /info: chat simples (sem SHU), chips para alternar entre pimentas sem voltar e COMPOSER “grudado” (não some com teclado)
+# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes, chips de pimentas no TOPO (cores por nome)
+# - /info: chat simples, chips para alternar entre pimentas sem voltar, composer “grudado” (não some com teclado)
 # - /kb.json: serve static/pepper_info.json ou baixa do KB_URL
-# - Normalização de nomes (acentos, hífens, chili↔chilli)
+# - Normalização de nomes (acentos, hífens, chili↔chilli) + fallback Levenshtein no /info
 # - Rodapé estático (não sobrepõe conteúdo)
 # - max_det configurável por env MAX_DET (opcional)
 
@@ -255,7 +255,7 @@ def info():
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:20px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
-    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:#0f172a;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .tip{color:var(--muted);font-size:13px}
 
     /* Área de mensagens com altura dinâmica (dvh) que respeita teclado */
@@ -264,7 +264,7 @@ def info():
       border-radius:12px;
       padding:12px;
       background:#fff;
-      height:50dvh;           /* não “some” quando o teclado abre */
+      height:50dvh;
       min-height:300px;
       overflow:auto;
     }
@@ -354,30 +354,59 @@ function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.clas
 function putMsg(text, me=false){ const wrap=el("div","msg"+(me?" me":"")); wrap.appendChild(el("div","bubble"+(me?" me":""), text)); document.getElementById('messages').appendChild(wrap); const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
 function norm(s){ return (s||"").normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,''); }
 
-async function loadKB(){
-  try{ const r = await fetch("/kb.json", {cache:"no-store"}); KB = await r.json(); }
-  catch{ KB = {}; }
+// --- variações e Levenshtein para robustez do "Chili/Chilli", hífens etc. ---
+function variants(n){
+  const vs = new Set([n]);
+  vs.add(n.replace(/chilli/g, "chili"));
+  vs.add(n.replace(/chili/g, "chilli"));
+  if(!n.endsWith("pepper")) vs.add(n + "pepper");
+  if(n.endsWith("pepper"))  vs.add(n.replace(/pepper$/, ""));
+  return Array.from(vs);
+}
+function lev(a,b){
+  const m=a.length, n=b.length;
+  if(m===0) return n; if(n===0) return m;
+  const dp = Array.from({length:m+1}, (_,i)=> Array(n+1).fill(0));
+  for(let i=0;i<=m;i++) dp[i][0]=i;
+  for(let j=0;j<=n;j++) dp[0][j]=j;
+  for(let i=1;i<=m;i++){
+    for(let j=1;j<=n;j++){
+      const cost = a[i-1]===b[j-1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost);
+    }
+  }
+  return dp[m][n];
 }
 function pickDoc(name){
   if(!KB) return null;
   const keys = Object.keys(KB);
+  if(!keys.length) return null;
+
   const normMap = Object.fromEntries(keys.map(k => [norm(k), k]));
-  const n0 = norm(name);
-  if(n0 in normMap) return KB[normMap[n0]];
-  const variants = [
-    n0.replace(/chilli/g, "chili"),
-    n0.replace(/chili/g, "chilli"),
-    n0.replace(/scotchbonnetpepper/g, "scotchbonnet-pepper"),
-  ];
-  for(const v of variants){
-    if(v in normMap) return KB[normMap[v]];
+  const n0 = norm(name||"");
+
+  for(const v of variants(n0)){ if(normMap[v]) return KB[normMap[v]]; }
+  for(const v of variants(n0)){
+    for(const nk in normMap){
+      if(nk.includes(v) || v.includes(nk)) return KB[normMap[nk]];
+    }
   }
-  for(const [nk, k] of Object.entries(normMap)){
-    if(n0.includes(nk) || nk.includes(n0)) return KB[k];
+  let bestKey = None, best = 1e9;
+  bestKey = None
+  best = 1e9
+  for(const nk in normMap){
+    const d = lev(n0, nk);
+    if(d < best){ best = d; bestKey = nk; }
   }
+  if(best <= 3) return KB[normMap[bestKey]];
   return null;
 }
+// ---------------------------------------------------------------------------
 
+async function loadKB(){
+  try{ const r = await fetch("/kb.json", {cache:"no-store"}); KB = await r.json(); }
+  catch{ KB = {}; }
+}
 function drawAlts(){
   const wrap = document.getElementById('altsWrap');
   const chips = document.getElementById('altsChips');
@@ -491,8 +520,7 @@ def ui():
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:22px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
-    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
-    .btn{color:#0f172a;background:#fff}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:#0f172a;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center; width:100%}
@@ -501,6 +529,9 @@ def ui():
     img,video,canvas{width:100%;height:auto;display:block;border-radius:10px}
     .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px}
     .status{margin-top:8px;min-height:22px}
+    .chips{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
+
     @media(max-width:700px){
       .images{flex-direction:column}
       .imgwrap{flex:1 1 100%;min-width:0}
@@ -524,7 +555,14 @@ def ui():
       <h1>Identificação de Pimentas</h1>
     </header>
 
+    <!-- NOVO: seção de chips de pimentas no topo, com cores por nome -->
     <section class="card">
+      <strong style="display:block;margin-bottom:8px">Conheça as pimentas</strong>
+      <div id="pepperTopChips" class="chips"></div>
+      <p class="tip" style="margin-top:8px">Toque para abrir o chat dessa pimenta — sem precisar identificar uma imagem.</p>
+    </section>
+
+    <section class="card" style="margin-top:16px">
       <div class="row">
         <button id="btnPick" class="btn">Escolher imagem</button>
         <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
@@ -568,10 +606,46 @@ def ui():
 const API = window.location.origin;
 let currentFile = null;
 let stream = null;
+let KB = null;
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(txt){ document.getElementById('chip').textContent = txt; }
 
+/* ---- Cores por nome (estáveis): gera HSL a partir do texto ---- */
+function hueFor(name){
+  let h = 0;
+  for (let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) % 360;
+  return h;
+}
+function styleForChip(name){
+  const h = hueFor(name);
+  const bg = `hsl(${h}, 85%, 93%)`;
+  const bd = `hsl(${h}, 60%, 75%)`;
+  return `background:${bg}; border-color:${bd}`;
+}
+
+/* ---- Chips do topo: carrega KB e desenha ---- */
+async function loadKB(){
+  try{
+    const r = await fetch("/kb.json", {cache:"no-store"});
+    KB = await r.json();
+  }catch(e){ KB = {}; }
+}
+function drawTopChips(){
+  const box = document.getElementById('pepperTopChips');
+  box.innerHTML = "";
+  const names = Object.keys(KB || {});
+  names.forEach(n=>{
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = n;
+    b.setAttribute('style', styleForChip(n));
+    b.onclick = () => { location.href = "/info?pepper=" + encodeURIComponent(n); };
+    box.appendChild(b);
+  });
+}
+
+/* ---- Compressão de imagem ---- */
 async function compressImage(file, maxSide=1024, quality=0.8){
   return new Promise((resolve,reject)=>{
     const img = new Image();
@@ -699,6 +773,7 @@ document.getElementById('btnSend').onclick = async () => {
         const b = document.createElement('button');
         b.className = 'btn';
         b.textContent = c;
+        b.setAttribute('style', styleForChip(c));
         b.onclick = () => {
           const link = "/info?pepper=" + encodeURIComponent(c) +
                        "&alts=" + encodeURIComponent(classes.join("|"));
@@ -727,7 +802,11 @@ document.getElementById('btnSend').onclick = async () => {
   }
 };
 
-waitReady();
+(async function(){
+  await loadKB();
+  drawTopChips();
+  waitReady();
+})();
 </script>
 </body>
 </html>

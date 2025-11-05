@@ -1,8 +1,12 @@
-# main.py — API e UI de Identificação de Pimentas (YOLOv8) para Render
-# Correções:
-# - /info: chat simples (sem SHU), quebras de linha corretas, e normalização chili/chilli
-# - /ui: layout mobile sem rolagem horizontal e imagens maiores
-# - /kb.json: lê static/pepper_info.json ou baixa do KB_URL
+# main.py — API e UI de Identificação de Pimentas (YOLOv8) — Render
+# Recursos:
+# - Modelo carrega em background
+# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes → abre /info com pepper + alts
+# - /info: chat simples (sem SHU), chips para alternar entre pimentas sem voltar e COMPOSER “grudado” (não some com teclado)
+# - /kb.json: serve static/pepper_info.json ou baixa do KB_URL
+# - Normalização de nomes (acentos, hífens, chili↔chilli)
+# - Rodapé estático (não sobrepõe conteúdo)
+# - max_det configurável por env MAX_DET (opcional)
 
 import os, io, time, threading, base64, requests, uuid
 from typing import List
@@ -44,12 +48,18 @@ PRESETS = {
     "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=10),
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
+# (opcional) sobrescrever por env:
+try:
+    _max_det_env = os.getenv("MAX_DET")
+    if _max_det_env:
+        CFG["max_det"] = int(_max_det_env)
+except:  # noqa
+    pass
 
 RETURN_IMAGE = True
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-# JSON com as infos das pimentas (fallback remoto se não existir local)
 KB_URL = os.getenv(
     "KB_URL",
     "https://raw.githubusercontent.com/divinomadalena8-crypto/pimentas-assets/main/pepper_info.json"
@@ -118,6 +128,8 @@ def health():
         "error": LOAD_ERR,
         "model": MODEL_PATH if MODEL_PATH else None,
         "classes": list(labels.values()) if READY else None,
+        "preset": PRESET,
+        "cfg": CFG,
     }
 
 @app.head("/")
@@ -231,36 +243,61 @@ def info():
 <html lang="pt-br">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <!-- viewport-fit=cover ajuda o layout quando o teclado abre (iOS/WebView) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Chat de Pimentas</title>
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
     html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.5 system-ui,-apple-system,Segoe UI,Roboto; overflow-x:hidden }
-    .wrap{max-width:980px; width:min(980px,100%); margin:auto; padding:16px 12px 72px}
+    .wrap{max-width:980px; width:min(980px,100%); margin:auto; padding:16px 12px 24px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:20px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
     .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .tip{color:var(--muted);font-size:13px}
-    .messages{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;height:60vh;min-height:360px;overflow:auto}
+
+    /* Área de mensagens com altura dinâmica (dvh) que respeita teclado */
+    .messages{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:12px;
+      background:#fff;
+      height:50dvh;           /* não “some” quando o teclado abre */
+      min-height:300px;
+      overflow:auto;
+    }
     .msg{margin:8px 0;display:flex}
     .msg.me{justify-content:flex-end}
     .bubble{max-width:80%;padding:10px 12px;border-radius:12px;border:1px solid var(--line); white-space:pre-wrap}
     .bubble.me{background:#eef2ff;border-color:#c7d2fe}
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
     .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
-footer{
-  position: static;           /* << deixa de ser fixo */
-  padding: 12px 14px;
-  background: #fff;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  text-align: center;
-  margin-top: 16px;           /* dá um respiro do conteúdo */
-}
+
+    /* Barra do compositor fica colada no final do card */
+    .composer{
+      position: sticky;
+      bottom: 0;
+      background: #fff;
+      padding-top: 10px;
+      margin-top: 10px;
+      border-top: 1px dashed var(--line);
+    }
+    @supports (padding: env(safe-area-inset-bottom)){
+      .composer{ padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    }
+
+    footer{
+      position: static;
+      padding: 12px 14px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin-top: 16px;
+    }
   </style>
 </head>
 <body>
@@ -274,6 +311,11 @@ footer{
     </header>
 
     <section class="card">
+      <div id="altsWrap" style="display:none; margin-bottom:10px">
+        <div class="tip" style="margin-bottom:6px">Outras pimentas detectadas:</div>
+        <div id="altsChips" class="chips"></div>
+      </div>
+
       <div class="tip" id="subtitle" style="margin-bottom:8px"></div>
 
       <div class="chips" id="chips">
@@ -286,9 +328,12 @@ footer{
 
       <div id="messages" class="messages"></div>
 
-      <div style="display:flex;gap:10px;margin-top:10px">
-        <input id="inputMsg" class="btn" style="flex:1;text-align:left;font-weight:400" placeholder="Pergunte algo (ex.: como usar?)"/>
-        <button id="btnSend" class="btn" style="background:var(--accent);color:#fff;border-color:var(--accent)">Enviar</button>
+      <!-- barra do input “colada” no fim do card -->
+      <div class="composer">
+        <div style="display:flex;gap:10px;">
+          <input id="inputMsg" class="btn" style="flex:1;text-align:left;font-weight:400" placeholder="Pergunte algo (ex.: como usar?)"/>
+          <button id="btnSend" class="btn" style="background:var(--accent);color:#fff;border-color:var(--accent)">Enviar</button>
+        </div>
       </div>
     </section>
   </div>
@@ -298,6 +343,9 @@ footer{
 <script>
 const qs = new URLSearchParams(location.search);
 const pepper = qs.get("pepper") || "";
+const altsParam = qs.get("alts") || "";
+let alts = altsParam.split("|").map(s=>s.trim()).filter(Boolean);
+alts = Array.from(new Set([pepper, ...alts].filter(Boolean)));
 
 let KB = null;
 let DOC = null;
@@ -315,11 +363,7 @@ function pickDoc(name){
   const keys = Object.keys(KB);
   const normMap = Object.fromEntries(keys.map(k => [norm(k), k]));
   const n0 = norm(name);
-
-  // match direto
   if(n0 in normMap) return KB[normMap[n0]];
-
-  // variações comuns: chilli <-> chili, hyphens etc
   const variants = [
     n0.replace(/chilli/g, "chili"),
     n0.replace(/chili/g, "chilli"),
@@ -328,12 +372,27 @@ function pickDoc(name){
   for(const v of variants){
     if(v in normMap) return KB[normMap[v]];
   }
-
-  // contém/parecido
   for(const [nk, k] of Object.entries(normMap)){
     if(n0.includes(nk) || nk.includes(n0)) return KB[k];
   }
   return null;
+}
+
+function drawAlts(){
+  const wrap = document.getElementById('altsWrap');
+  const chips = document.getElementById('altsChips');
+  if(alts.length <= 1){ wrap.style.display="none"; return; }
+  wrap.style.display = "block";
+  chips.innerHTML = "";
+  alts.forEach(name => {
+    const chip = el("span","chip", name);
+    chip.onclick = () => {
+      const url = "/info?pepper=" + encodeURIComponent(name) +
+                  "&alts=" + encodeURIComponent(alts.join("|"));
+      location.href = url;
+    };
+    chips.appendChild(chip);
+  });
 }
 
 function answer(q){
@@ -361,27 +420,41 @@ function answer(q){
     parts.push(`Sobre ${nome}: ${DOC.descricao || "sem descrição disponível nesta base."}`);
     parts.push("Você pode perguntar sobre usos/receitas, conservação, substituições ou origem.");
   }
-  return parts.join("\n\n");  // <-- quebras de linha reais
+  return parts.join("\n\n");
 }
 
+/* --- manter o botão Enviar visível quando o teclado abre --- */
+const messages = document.getElementById('messages');
+const composer  = document.querySelector('.composer');
+const input     = document.getElementById('inputMsg');
+function keepComposerVisible(){
+  try{ composer.scrollIntoView({block:'end'}); }catch(e){}
+  messages.scrollTop = messages.scrollHeight;
+}
+input.addEventListener('focus', ()=> setTimeout(keepComposerVisible, 100));
+window.addEventListener('resize', ()=> setTimeout(keepComposerVisible, 100));
+/* ----------------------------------------------------------- */
+
 document.getElementById('btnSend').onclick = () => {
-  const input = document.getElementById('inputMsg');
   const q = (input.value || "").trim();
   if(!q) return;
   input.value = "";
   putMsg(q, true);
   putMsg(answer(q), false);
+  keepComposerVisible();
 };
 document.getElementById('chips').addEventListener('click', (e)=>{
   const t = e.target.closest('.chip'); if(!t) return;
   const q = t.getAttribute('data-q');
   putMsg(q, true);
   putMsg(answer(q), false);
+  keepComposerVisible();
 });
 
 (async function(){
   await loadKB();
   DOC = pickDoc(pepper) || null;
+  drawAlts();
   const title = document.getElementById('title');
   const subtitle = document.getElementById('subtitle');
   if(DOC){
@@ -414,11 +487,12 @@ def ui():
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
     html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto; overflow-x:hidden }
-    .wrap{max-width:1040px; width:min(1040px,100%); margin:auto; padding:16px 12px 72px}
+    .wrap{max-width:1040px; width:min(1040px,100%); margin:auto; padding:16px 12px 24px}
     header{display:flex;align-items:center;gap:10px}
     header h1{font-size:22px;margin:0}
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
-    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    .btn{color:#0f172a;background:#fff}
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center; width:100%}
@@ -431,16 +505,16 @@ def ui():
       .images{flex-direction:column}
       .imgwrap{flex:1 1 100%;min-width:0}
     }
-footer{
-  position: static;           /* << deixa de ser fixo */
-  padding: 12px 14px;
-  background: #fff;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  text-align: center;
-  margin-top: 16px;           /* dá um respiro do conteúdo */
-}
+    footer{
+      position: static;
+      padding: 12px 14px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin-top: 16px;
+    }
   </style>
 </head>
 <body>
@@ -479,6 +553,11 @@ footer{
         </div>
       </div>
 
+      <div id="chooser" class="card" style="display:none; margin-top:10px">
+        <strong style="display:block; margin-bottom:8px">Várias pimentas detectadas — qual você quer explorar?</strong>
+        <div id="chipsClasses" class="row"></div>
+      </div>
+
       <div id="resumo" class="status tip"></div>
     </section>
   </div>
@@ -489,7 +568,6 @@ footer{
 const API = window.location.origin;
 let currentFile = null;
 let stream = null;
-let lastClass = null;
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function setStatus(txt){ document.getElementById('chip').textContent = txt; }
@@ -542,7 +620,7 @@ async function useLocalFile(f){
   document.getElementById('video').style.display = "none";
   document.getElementById('btnSend').disabled = false;
   document.getElementById('btnChat').style.display = "none";
-  lastClass = null;
+  document.getElementById('chooser').style.display = "none";
   document.getElementById('resumo').textContent = "";
 }
 
@@ -561,8 +639,9 @@ btnCam.onclick = async () => {
     btnShot.style.display = "inline-block";
     setStatus("Câmera aberta");
   }catch(e){
+    // Fallback nativo (WebView abre seletor/câmera do SO)
     inputCamera.value = "";
-    inputCamera.click();      // fallback nativo (WebView)
+    inputCamera.click();
   }
 };
 
@@ -579,12 +658,12 @@ btnShot.onclick = () => {
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     document.getElementById('btnSend').disabled = false;
     document.getElementById('btnChat').style.display = "none";
-    lastClass = null;
+    document.getElementById('chooser').style.display = "none";
     setStatus("Foto capturada");
   },"image/jpeg",0.92);
 };
 
-// Predição + Chat
+// Predição + chooser + chat
 document.getElementById('btnSend').onclick = async () => {
   if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
@@ -606,14 +685,40 @@ document.getElementById('btnSend').onclick = async () => {
                               : "Nenhuma pimenta detectada.";
     document.getElementById('resumo').textContent = resumo;
 
+    // --- classes detectadas (únicas) ---
+    const classes = [...new Set((d.preds || []).map(p => p.classe).filter(Boolean))];
+
+    const chooser = document.getElementById('chooser');
+    const chipsClasses = document.getElementById('chipsClasses');
     const chatBtn = document.getElementById('btnChat');
-    if(d.top_pred && d.top_pred.classe){
-      lastClass = d.top_pred.classe;
-      chatBtn.style.display = "inline-block";
-      chatBtn.onclick = () => { location.href = "/info?pepper=" + encodeURIComponent(lastClass); };
-    }else{
+
+    if (classes.length > 1) {
+      chooser.style.display = "block";
+      chipsClasses.innerHTML = "";
+      classes.forEach(c => {
+        const b = document.createElement('button');
+        b.className = 'btn';
+        b.textContent = c;
+        b.onclick = () => {
+          const link = "/info?pepper=" + encodeURIComponent(c) +
+                       "&alts=" + encodeURIComponent(classes.join("|"));
+          location.href = link;
+        };
+        chipsClasses.appendChild(b);
+      });
       chatBtn.style.display = "none";
-      lastClass = null;
+    } else if (classes.length === 1) {
+      chooser.style.display = "none";
+      const c = classes[0];
+      chatBtn.style.display = "inline-block";
+      chatBtn.onclick = () => {
+        const link = "/info?pepper=" + encodeURIComponent(c) +
+                     "&alts=" + encodeURIComponent(classes.join("|"));
+        location.href = link;
+      };
+    } else {
+      chooser.style.display = "none";
+      chatBtn.style.display = "none";
     }
   }catch(e){
     document.getElementById('resumo').textContent = "Falha ao chamar a API.";
@@ -628,4 +733,3 @@ waitReady();
 </html>
 """
     return HTMLResponse(content=html)
-

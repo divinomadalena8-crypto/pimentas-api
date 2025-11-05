@@ -21,7 +21,7 @@
     "origem": "Brasil (variedade local de Capsicum chinense).",
     "imagem": "/static/peppers/Bode.png"
   },
-  "Chili-Pepper": {
+  "Chilli-Pepper": {
     "nome": "Chilli",
     "scoville": "5.000–50.000",
     "descricao": "Termo genérico para pimentas de ardência baixa a média em culinárias mexicana/tex-mex.",
@@ -87,7 +87,7 @@
     "origem": "Sudeste do Brasil.",
     "imagem": "/static/peppers/Cambuci.jpng"
   },
-  "Chili-Pepper": {
-    "alias_de": "Chilli-Pepper"
+  "Chilli-Pepper": {
+    "alias_de": "Chili-Pepper"
   }
 }

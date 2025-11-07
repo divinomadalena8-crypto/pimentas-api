@@ -15,6 +15,10 @@ python-multipart>=0.0.9
 # IA opcional para o /ai
 openai>=1.40
 
+# para busca web (RAG)
+tavily-python>=0.3.3
+
+
 
 
 

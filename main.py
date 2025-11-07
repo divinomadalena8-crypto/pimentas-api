@@ -1,12 +1,12 @@
-# main.py — API e UI de Identificação de Pimentas (YOLOv8) — Render
+# main.py — API + UI de Identificação de Pimentas (YOLOv8) com Chat expandido
 # Recursos:
-# - Modelo carrega em background
-# - /ui: câmera/galeria, imagens grandes, chooser quando há múltiplas classes
-# - /info: chat com menu numérico + perguntas livres e fallback de IA (RAG leve)
-# - /kb.json: serve static/pepper_info.json ou baixa do KB_URL
-# - Normalização de nomes (acentos, hífens, chili↔chilli) + fallback Levenshtein no /info
-# - Rodapé estático (não sobrepõe conteúdo)
-# - max_det configurável por env MAX_DET (opcional)
+# - /ui: upload/câmera (com fallback), imagens grandes, escolha de classe quando há múltiplas
+# - /info: chat com menu numérico + perguntas livres e fallback em cascata:
+#          regras locais (JSON) -> /ai (RAG no JSON) -> /ai_general (IA geral) -> /webqa (RAG com web/Tavily)
+# - /kb.json: serve static/pepper_info.json ou baixa de KB_URL (Raw GitHub, p.ex.)
+# - Aliases /kb e /kb.jso -> /kb.json (para evitar erro de digitação)
+# - Normalização de nomes (acentos, hífen, chili/chilli, sufixo "-Pepper") + Levenshtein
+# - Rodapé não fixo (não cobre conteúdo); imagens maiores no /ui
 
 import os, io, time, threading, base64, requests, uuid, json
 from typing import List
@@ -48,12 +48,11 @@ PRESETS = {
     "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=10),
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
-# (opcional) sobrescrever por env:
 try:
     _max_det_env = os.getenv("MAX_DET")
     if _max_det_env:
         CFG["max_det"] = int(_max_det_env)
-except:  # noqa
+except:
     pass
 
 RETURN_IMAGE = True
@@ -65,7 +64,11 @@ KB_URL = os.getenv(
     "https://raw.githubusercontent.com/divinomadalena8-crypto/pimentas-assets/main/pepper_info.json"
 ).strip()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()  # opcional
+# IA e RAG
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "").strip()   # para /ai e /ai_general
+ENABLE_GENERAL_AI = os.getenv("ENABLE_GENERAL_AI", "0") == "1"
+ENABLE_WEB_RAG    = os.getenv("ENABLE_WEB_RAG", "0") == "1"
+TAVILY_API_KEY    = os.getenv("TAVILY_API_KEY", "").strip()
 
 # ---------------------- ESTADO ----------------------
 model = None
@@ -237,6 +240,11 @@ def kb_json():
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"error": "pepper_info.json não encontrado"}, status_code=404)
 
+@app.get("/kb")
+@app.get("/kb.jso")  # alias pra quem digita sem o 'n'
+def kb_alias():
+    return kb_json()
+
 def _load_kb_dict():
     local_path = os.path.join(STATIC_DIR, "pepper_info.json")
     if os.path.exists(local_path):
@@ -248,7 +256,7 @@ def _load_kb_dict():
         return r.json()
     return {}
 
-# ---------------------- IA (opcional) ----------------------
+# ---------------------- IA (RAG no JSON) ----------------------
 @app.post("/ai")
 async def ai(req: Request):
     """
@@ -280,7 +288,9 @@ async def ai(req: Request):
     if not OPENAI_API_KEY:
         return JSONResponse({
             "ok": True,
-            "text": "No momento não tenho mais detalhes sobre essa pimenta além do que está na base local."
+            "text": "No momento não tenho mais detalhes sobre essa pimenta além do que está na base local.",
+            "mode": "ai",
+            "used_context": bool(doc)
         })
 
     try:
@@ -305,9 +315,110 @@ async def ai(req: Request):
             ],
         )
         text = (resp.choices[0].message.content or "").strip()
-        return JSONResponse({"ok": True, "text": text})
+        return JSONResponse({"ok": True, "text": text, "mode": "ai", "used_context": bool(doc)})
     except Exception:
-        return JSONResponse({"ok": True, "text": "Não consegui consultar a IA agora."})
+        return JSONResponse({"ok": True, "text": "Não consegui consultar a IA agora.", "mode": "ai", "used_context": bool(doc)})
+
+# ---------------------- IA GERAL (sem JSON) ----------------------
+@app.post("/ai_general")
+async def ai_general(req: Request):
+    """
+    IA 'universal' (sem limitar ao JSON). Use com parcimônia.
+    Requer OPENAI_API_KEY e ENABLE_GENERAL_AI=1.
+    """
+    if not ENABLE_GENERAL_AI:
+        return JSONResponse({"ok": False, "error": "general_ai_disabled"}, status_code=403)
+
+    data = await req.json()
+    q = (data.get("q") or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty question"}, status_code=400)
+
+    if not OPENAI_API_KEY:
+        return JSONResponse({"ok": True, "text": "IA geral indisponível (sem OPENAI_API_KEY)."}, status_code=200)
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        system = (
+            "Você é um assistente de culinária e pimentas. "
+            "Responda em português, com precisão e objetividade. "
+            "Se não tiver certeza, diga que não tem certeza e sugira termos de busca."
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.3,
+            max_tokens=300,
+            messages=[
+                {"role":"system","content":system},
+                {"role":"user","content":q}
+            ],
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return JSONResponse({"ok": True, "text": text, "mode": "ai_general"})
+    except Exception:
+        return JSONResponse({"ok": True, "text": "Não consegui consultar a IA geral agora."})
+
+# ---------------------- WEB RAG (Tavily) ----------------------
+@app.post("/webqa")
+async def webqa(req: Request):
+    """
+    RAG com web (Tavily). Requer ENABLE_WEB_RAG=1 e TAVILY_API_KEY + OPENAI_API_KEY.
+    """
+    if not ENABLE_WEB_RAG:
+        return JSONResponse({"ok": False, "error": "web_rag_disabled"}, status_code=403)
+
+    data = await req.json()
+    q = (data.get("q") or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty question"}, status_code=400)
+
+    if not TAVILY_API_KEY or not OPENAI_API_KEY:
+        return JSONResponse({"ok": True, "text": "RAG com web indisponível (faltam chaves)."}, status_code=200)
+
+    try:
+        try:
+            from tavily import TavilyClient
+        except Exception:
+            return JSONResponse({"ok": True, "text": "Tavily SDK não instalado."})
+
+        tv = TavilyClient(api_key=TAVILY_API_KEY)
+        search = tv.search(q, max_results=5)
+        docs = search.get("results", [])
+        if not docs:
+            return JSONResponse({"ok": True, "text": "Não encontrei fontes relevantes para essa pergunta."})
+
+        ctx = []
+        for d in docs:
+            title = d.get("title","")
+            url   = d.get("url","")
+            content = (d.get("content") or "")[:1200]
+            ctx.append(f"- {title} ({url}): {content}")
+        context = "\n".join(ctx)
+
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        system = (
+            "Você responde em português, com base EXCLUSIVA no contexto fornecido. "
+            "Liste as fontes usadas ao final, com URLs. Se não houver evidência no contexto, diga isso."
+        )
+        user = f"CONTEXTOS:\n{context}\n\nPERGUNTA:\n{q}"
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            max_tokens=350,
+            messages=[
+                {"role":"system","content":system},
+                {"role":"user","content":user},
+            ],
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return JSONResponse({"ok": True, "text": text, "mode": "web_rag", "sources": [d.get("url") for d in docs]})
+    except Exception:
+        return JSONResponse({"ok": True, "text": "Não consegui fazer a busca agora."})
 
 # ---------------------- UI: CHAT (/info) ----------------------
 @app.get("/info")
@@ -317,7 +428,6 @@ def info():
 <html lang="pt-br">
 <head>
   <meta charset="utf-8"/>
-  <!-- viewport-fit=cover ajuda quando o teclado abre em mobile -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Chat de Pimentas</title>
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
@@ -574,10 +684,10 @@ document.getElementById('btnSend').onclick = async () => {
 
   putMsg(q, true);
 
-  // regra local
+  // 1) regra local
   let a = answer(q);
 
-  // fallback IA se a resposta for genérica/insuficiente
+  // 2) fallback RAG/JSON (/ai)
   if (/Ainda não tenho dados|Sem .* registrad/.test(a)) {
     try {
       const r = await fetch("/ai", {
@@ -586,9 +696,40 @@ document.getElementById('btnSend').onclick = async () => {
         body: JSON.stringify({ pepper: (DOC?.nome || pepper || ""), q })
       });
       const j = await r.json();
-      if (j && j.ok && j.text) a = j.text;
-    } catch(e) { /* se falhar IA, mantém resposta local */ }
+      if (j && j.ok && j.text && !/No momento não tenho mais detalhes/.test(j.text)) {
+        a = j.text; // opcional: + " (via IA JSON)"
+      } else {
+        // 3) IA geral (se habilitada no backend)
+        try {
+          const g = await fetch("/ai_general", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ q })
+          });
+          if (g.status === 200) {
+            const gj = await g.json();
+            if (gj && gj.ok && gj.text) {
+              a = gj.text; // opcional: + " (via IA geral)"
+            } else {
+              // 4) Web RAG (se habilitado no backend)
+              try {
+                const w = await fetch("/webqa", {
+                  method: "POST",
+                  headers: {"Content-Type":"application/json"},
+                  body: JSON.stringify({ q })
+                });
+                if (w.status === 200) {
+                  const wj = await w.json();
+                  if (wj && wj.ok && wj.text) a = wj.text;
+                }
+              } catch (e3){}
+            }
+          }
+        } catch (e2){}
+      }
+    } catch (e1){}
   }
+
   putMsg(a);
   keepComposerVisible();
 };
@@ -606,6 +747,8 @@ document.getElementById('chips').addEventListener('click', (e)=>{
     const r = await fetch("/kb.json", {cache:"no-store"});
     KB = await r.json();
   }catch(e){ KB = {}; }
+
+  // carregar DOC e pimentas alternativas
   DOC = pickDoc(pepper) || null;
 
   const title = document.getElementById('title');
@@ -636,7 +779,7 @@ document.getElementById('chips').addEventListener('click', (e)=>{
     });
   }
 
-  // mostra o menu inicial
+  // menu inicial
   showMenu();
 })();
 </script>

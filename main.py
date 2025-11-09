@@ -1,5 +1,6 @@
 # main.py — Pimentas App (YOLOv8 + Chat com IA/JSON/Web-RAG)
-# UI clara, sem painel "Resumo", chat com fallback inteligente.
+# UI clara, sem indicador "Pronto" e sem painel/linha de "Resumo".
+# Chat robusto: IA (se houver) -> JSON local -> IA geral -> Web-RAG (Tavily).
 
 import os, io, time, threading, base64, uuid, json
 from typing import Optional
@@ -32,11 +33,11 @@ MODEL_PATH = os.path.basename(urlparse(MODEL_URL).path) if MODEL_URL else "best.
 
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
-    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=10),
-    "RAPIDO":      dict(imgsz=384, conf=0.30, iou=0.50, max_det=8),
-    "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=10),
-    "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=12),
-    "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=16),
+    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=16),
+    "RAPIDO":      dict(imgsz=384, conf=0.30, iou=0.50, max_det=12),
+    "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=16),
+    "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=20),
+    "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=24),
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
@@ -49,7 +50,7 @@ ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
 os.makedirs(ANNOT_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "").strip()
 ENABLE_GENERAL_AI = os.getenv("ENABLE_GENERAL_AI", "0") == "1"
 ENABLE_WEB_RAG    = os.getenv("ENABLE_WEB_RAG", "0") == "1"
 TAVILY_API_KEY    = os.getenv("TAVILY_API_KEY", "").strip()
@@ -128,8 +129,9 @@ def kb_json():
 
 # ----------------- IA helpers -----------------
 def _openai_chat(messages, model="gpt-4o-mini", temperature=0.2, max_tokens=500) -> str:
+    """Retorna string ou '' (nunca mensagem de erro para o usuário)."""
     if not OPENAI_API_KEY:
-        return "Não consegui consultar a IA agora, então vou tentar usar meus dados locais."
+        return ""
     try:
         r = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -138,9 +140,12 @@ def _openai_chat(messages, model="gpt-4o-mini", temperature=0.2, max_tokens=500)
             timeout=30
         )
         j = r.json()
-        return j["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"Não consegui consultar a IA agora ({e})."
+        if isinstance(j, dict) and j.get("choices"):
+            text = j["choices"][0]["message"]["content"].strip()
+            return text
+        return ""
+    except Exception:
+        return ""
 
 def _tavily_search(q: str, k: int = 5) -> str:
     if not (ENABLE_WEB_RAG and TAVILY_API_KEY): return ""
@@ -169,39 +174,45 @@ def _tavily_search(q: str, k: int = 5) -> str:
 def ai_local(payload: dict):
     pepper = payload.get("pepper","").strip()
     q      = payload.get("q","").strip()
+
+    # Carrega KB local
     kb = {}
     p = os.path.join(STATIC_DIR, "pepper_info.json")
     if os.path.exists(p):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 kb = json.load(f)
-        except: kb = {}
+        except:
+            kb = {}
+
+    # Seleciona doc
     doc = None
     if isinstance(kb, dict):
         for k in kb.keys():
             if k.lower()==pepper.lower() or pepper.lower() in k.lower() or k.lower() in pepper.lower():
                 doc = kb[k]; break
+
+    # Tenta IA com contexto (silenciosa ao falhar)
     sys = ("Você é um assistente curto e direto. "
-           "Responda com base no JSON fornecido (se compatível) e formate com parágrafos curtos.")
+           "Responda em PT-BR com base no JSON fornecido (se compatível) e formate com parágrafos curtos.")
     user = f"Pergunta: {q}\n\nContexto: {json.dumps(doc or {}, ensure_ascii=False)}"
-    text = _openai_chat([
-        {"role":"system","content":sys},
-        {"role":"user","content":user}
-    ])
-    ok = bool(text and "não consegui consultar a ia" not in text.lower())
-    return JSONResponse({"ok": ok, "text": text})
+    text = _openai_chat(
+        [{"role":"system","content":sys}, {"role":"user","content":user}]
+    )
+    ok = bool(text)
+    return JSONResponse({"ok": ok, "text": text or ""})
 
 @app.post("/ai_general")
 def ai_general(payload: dict):
     if not ENABLE_GENERAL_AI:
-        return JSONResponse({"ok": False, "text": "IA geral desativada."})
+        return JSONResponse({"ok": False, "text": ""})
     q = payload.get("q","")
     sys = "Responda em PT-BR, objetivo, até 4 linhas."
-    text = _openai_chat([
-        {"role":"system","content":sys},
-        {"role":"user","content":q}
-    ])
-    return JSONResponse({"ok": bool(text), "text": text})
+    text = _openai_chat(
+        [{"role":"system","content":sys}, {"role":"user","content":q}],
+        max_tokens=300
+    )
+    return JSONResponse({"ok": bool(text), "text": text or ""})
 
 @app.post("/webqa")
 def webqa(payload: dict):
@@ -209,10 +220,11 @@ def webqa(payload: dict):
     ans = _tavily_search(q)
     if not ans: return JSONResponse({"ok": False, "text": ""})
     if OPENAI_API_KEY:
-        text = _openai_chat([
-            {"role":"system","content":"Resuma em até 4 linhas, cite fonte entre parênteses quando possível."},
-            {"role":"user","content":ans}
-        ], max_tokens=300)
+        text = _openai_chat(
+            [{"role":"system","content":"Resuma em até 4 linhas, cite fonte entre parênteses quando possível."},
+             {"role":"user","content":ans}],
+            max_tokens=300
+        )
         return JSONResponse({"ok": True, "text": text or ans})
     return JSONResponse({"ok": True, "text": ans})
 
@@ -286,7 +298,7 @@ def info():
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
     .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
-    .messages{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff;height:55vh;min-height:290px;overflow:auto}
+    .messages{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff;height:58vh;min-height:290px;overflow:auto}
     .msg{margin:6px 0;display:flex}
     .msg.me{justify-content:flex-end}
     .bubble{max-width:80%;padding:8px 10px;border-radius:12px;border:1px solid var(--line);white-space:pre-wrap}
@@ -346,13 +358,13 @@ function normalizeQuestion(q){
   if(t==="4")return "Substituições"; if(t==="5")return "Origem"; return q;
 }
 
-// retorna {text, weak}
+// local -> {text, weak}
 function answerLocal(q){
   if(!DOC) return {text:"Ainda não tenho dados desta pimenta.", weak:true};
   const msg=q.toLowerCase();
   const parts=[]; let hits=0;
 
-  if(/o que|o que é|\?/.test(msg) && DOC.descricao){ parts.push(DOC.descricao); hits++; }
+  if(/o que|o que é|\?$/.test(msg) && DOC.descricao){ parts.push(DOC.descricao); hits++; }
   if(/uso|receita|culin[aá]ria|prato/.test(msg)){
     if(DOC.usos){ parts.push("Usos: "+DOC.usos); hits++; }
     if(DOC.receitas){ parts.push("Receitas: "+DOC.receitas); hits++; }
@@ -365,34 +377,28 @@ function answerLocal(q){
   if(!parts.length){
     const base = DOC.descricao ? ("Sobre "+(DOC.nome||pepper||"pimenta")+": "+DOC.descricao) :
                                   "Posso falar sobre usos/receitas, conservação, substituições ou origem.";
-    return {text: base, weak: true}; // resposta genérica -> escalar IA
+    return {text: base, weak: true};
   }
-  return {text: parts.join("\n\n"), weak: hits<=1}; // 1 hit só ainda é fraco
+  return {text: parts.join("\\n\\n"), weak: hits<=1};
 }
 
-// fluxo: IA -> local -> (se fraco) IA geral -> Web-RAG
 async function ask(q){
-  // 1) IA com contexto
-  let a="";
+  // 1) IA com contexto (silenciosa ao falhar)
+  let a=""; let ok=false;
   try{
     const r=await fetch("/ai",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pepper:(DOC?.nome||pepper||""),q})});
-    if(r.status===200){
-      const j=await r.json();
-      const txt=(j.text||"").trim();
-      const neutro=/não consegui consultar a ia/i.test(txt);
-      if(j.ok && txt && !neutro) a=txt;
-    }
+    if(r.ok){ const j=await r.json(); if(j && j.ok && j.text) { a=j.text; ok=true; } }
   }catch(e){}
 
   // 2) local
   let weak=false;
-  if(!a){ const L=answerLocal(q); a=L.text; weak=L.weak; }
+  if(!ok){ const L=answerLocal(q); a=L.text; weak=L.weak; }
 
   // 3) IA geral se fraco
   if(weak){
     try{
       const g=await fetch("/ai_general",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q})});
-      if(g.status===200){ const gj=await g.json(); if(gj && gj.ok && gj.text) { a=gj.text; weak=false; } }
+      if(g.ok){ const gj=await g.json(); if(gj && gj.ok && gj.text){ a=gj.text; weak=false; } }
     }catch(e){}
   }
 
@@ -400,7 +406,7 @@ async function ask(q){
   if(weak){
     try{
       const w=await fetch("/webqa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q})});
-      if(w.status===200){ const wj=await w.json(); if(wj && wj.ok && wj.text) a=wj.text; }
+      if(w.ok){ const wj=await w.json(); if(wj && wj.ok && wj.text){ a=wj.text; } }
     }catch(e){}
   }
   return a || "Não encontrei uma boa resposta agora.";
@@ -422,7 +428,7 @@ document.getElementById('btnSend').onclick = async ()=>{
   await loadKB();
   DOC=pickDoc(pepper)||null;
   document.getElementById('title').textContent="Chat: "+(DOC?.nome||pepper||"Pimenta");
-  putMsg("Digite 1–5 para atalhos ou faça uma pergunta livre.",false);
+  putMsg("Use os botões ou faça sua pergunta. Respondo com base no arquivo local e, se precisar, amplio com IA/Web.",false);
 })();
 </script>
 </body>
@@ -481,7 +487,6 @@ def ui():
         <button id="btnSend" class="btn accent" disabled>Identificar</button>
         <button id="btnChat" class="btn" style="display:none">Conversar sobre a pimenta</button>
 
-        <span id="chip" class="pill">Conectando…</span>
         <span id="badgeTime" class="pill">–</span>
       </div>
       <p class="tip">Comprimimos para ~1024px antes do envio para acelerar.</p>
@@ -498,8 +503,6 @@ def ui():
           <img id="annotated" alt="resultado"/>
         </div>
       </div>
-
-      <div id="resumo" class="tip" style="margin-top:8px"></div>
     </section>
 
     <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
@@ -510,7 +513,6 @@ const API = window.location.origin;
 let currentFile=null, stream=null, lastClass=null;
 
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-function setStatus(t){document.getElementById('chip').textContent=t;}
 
 async function compressImage(file,maxSide=1024,quality=0.85){
   return new Promise((resolve,reject)=>{
@@ -527,13 +529,12 @@ async function compressImage(file,maxSide=1024,quality=0.85){
   });
 }
 
+// Habilita o botão quando a API estiver pronta (sem mostrar status visual)
 async function waitReady(){
-  setStatus("Conectando…");
   try{
     const r=await fetch(API+"/",{cache:"no-store"}); const d=await r.json();
-    if(d.ready){ setStatus("Pronto"); document.getElementById('btnSend').disabled=!currentFile; return; }
-    setStatus("Aquecendo…");
-  }catch{ setStatus("Sem conexão…"); }
+    if(d.ready){ document.getElementById('btnSend').disabled=!currentFile; return; }
+  }catch{}
   await sleep(1200); waitReady();
 }
 
@@ -552,7 +553,6 @@ async function useLocalFile(f){
   document.getElementById('btnSend').disabled=false;
   document.getElementById('btnChat').style.display="none";
   lastClass=null;
-  document.getElementById('resumo').textContent="";
 }
 
 const btnCam=document.getElementById('btnCam');
@@ -565,7 +565,7 @@ btnCam.onclick=async()=>{
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}}});
     video.srcObject=stream; video.style.display="block";
     document.getElementById('preview').style.display="none";
-    btnShot.style.display="inline-block"; setStatus("Câmera aberta");
+    btnShot.style.display="inline-block";
   }catch(e){ inputCamera.value=""; inputCamera.click(); }
 };
 
@@ -577,35 +577,35 @@ btnShot.onclick=()=>{
     document.getElementById('preview').src=URL.createObjectURL(currentFile);
     document.getElementById('preview').style.display="block"; video.style.display="none"; btnShot.style.display="none";
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-    document.getElementById('btnSend').disabled=false; document.getElementById('btnChat').style.display="none"; lastClass=null; setStatus("Foto capturada");
+    document.getElementById('btnSend').disabled=false; document.getElementById('btnChat').style.display="none"; lastClass=null;
   },"image/jpeg",0.92);
 };
 
 document.getElementById('btnSend').onclick=async()=>{
   if(!currentFile) return;
   document.getElementById('btnSend').disabled=true;
-  document.getElementById('resumo').textContent="Enviando...";
   const t0=performance.now();
   try{
     const fd=new FormData(); fd.append("file",currentFile,currentFile.name||"image.jpg");
     const r=await fetch(API+"/predict",{method:"POST",body:fd}); const d=await r.json();
-    if(d.ok===false && d.warming_up){ document.getElementById('resumo').textContent="Aquecendo… tente novamente"; return; }
-    if(d.ok===false){ document.getElementById('resumo').textContent="Erro: "+(d.error||"desconhecido"); return; }
+
+    if(d.ok===false && d.warming_up){ return; }
+    if(d.ok===false){ return; }
 
     if(d.image_b64){ document.getElementById('annotated').src=d.image_b64; }
     else if(d.image_url){ const url=d.image_url.startsWith("http")?d.image_url:(API+d.image_url); document.getElementById('annotated').src=url; }
 
     const ms=(performance.now()-t0)/1000;
     document.getElementById('badgeTime').textContent=(d.inference_time_s||ms).toFixed(2)+" s";
-    const resumo=d.top_pred ? `Pimenta: ${d.top_pred.classe} · ${Math.round((d.top_pred.conf||0)*100)}% · Caixas: ${d.num_dets}` : "Nenhuma pimenta detectada.";
-    document.getElementById('resumo').textContent=resumo;
 
     const chatBtn=document.getElementById('btnChat');
     if(d.top_pred && d.top_pred.classe){
       lastClass=d.top_pred.classe; chatBtn.style.display="inline-block";
       chatBtn.onclick=()=>{ location.href="/info?pepper="+encodeURIComponent(lastClass); };
-    }else{ chatBtn.style.display="none"; lastClass=null; }
-  }catch(e){ document.getElementById('resumo').textContent="Falha ao chamar a API."; }
+    }else{
+      chatBtn.style.display="none"; lastClass=null;
+    }
+  }catch(e){ }
   finally{ document.getElementById('btnSend').disabled=false; }
 };
 

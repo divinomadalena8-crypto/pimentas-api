@@ -1,60 +1,57 @@
-// Versão do cache (troque ao publicar para forçar atualização)
-const CACHE_NAME = 'pimentas-v4';
-
-// “App shell”: páginas e assets estáticos
+/* Pimentas PWA SW — cache estático + app shell */
+const VERSION = 'v4.0';
+const STATIC_CACHE = `static-${VERSION}`;
 const APP_SHELL = [
-  '/ui/',                          // sua UI
-  '/static/pepper_info.json',      // base local do chat (se existir)
-  '/static/pimenta-logo.png'       // seu logo (se existir)
+  '/', '/ui', '/info',
+  '/static/manifest.webmanifest',
+  '/static/pimenta-logo.png',
+  '/static/pimenta-512.png',
+  '/static/splash.png',
+  '/static/pepper_info.json'
 ];
 
-// Instala e prepara cache
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
-  );
+// Instala: pré-cache do shell
+self.addEventListener('install', (evt) => {
   self.skipWaiting();
+  evt.waitUntil(caches.open(STATIC_CACHE).then(c => c.addAll(APP_SHELL)));
 });
 
-// Assume controle imediatamente
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
+// Ativa: limpa caches antigos
+self.addEventListener('activate', (evt) => {
+  evt.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    )
+      Promise.all(keys.filter(k => k !== STATIC_CACHE).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Estratégia:
-//  - POSTs/PUTs/PATCH/DELETE → passam direto (não cacheia)
-//  - Chamadas de API (ex.: /predict) → sempre rede (network-first)
-//  - Demais GETs → cache-first com fallback à rede
-self.addEventListener('fetch', (event) => {
-  const req = event.request;
-  const url = new URL(req.url);
+// Busca: cache-first para estáticos; network-first para páginas
+self.addEventListener('fetch', (evt) => {
+  const url = new URL(evt.request.url);
 
-  // Nunca intercepta métodos não-GET
-  if (req.method !== 'GET') return;
+  // Nunca cacheie a inferência
+  if (url.pathname.startsWith('/predict')) return;
 
-  // Evita interferir em endpoints dinâmicos
-  if (url.pathname.startsWith('/predict') || url.pathname.startsWith('/warmup')) {
-    event.respondWith(fetch(req).catch(() => new Response('Offline', {status: 503})));
+  // Estáticos
+  if (url.pathname.startsWith('/static/')) {
+    evt.respondWith(
+      caches.open(STATIC_CACHE).then(cache =>
+        cache.match(evt.request).then(hit => hit || fetch(evt.request).then(r => {
+          cache.put(evt.request, r.clone()); return r;
+        }))
+      )
+    );
     return;
   }
 
-  // Cache-first para estáticos e /ui
-  event.respondWith(
-    caches.match(req).then(cached => {
-      if (cached) return cached;
-      return fetch(req).then(resp => {
-        // Só cacheia respostas 200 e do mesmo host
-        if (resp && resp.status === 200 && url.origin === location.origin) {
-          const clone = resp.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(req, clone));
-        }
-        return resp;
-      });
-    })
-  );
+  // Páginas do app (ui/info): network-first com fallback ao cache
+  if (url.pathname === '/' || url.pathname === '/ui' || url.pathname === '/info') {
+    evt.respondWith(
+      fetch(evt.request).then(r => {
+        const clone = r.clone();
+        caches.open(STATIC_CACHE).then(c => c.put(evt.request, clone));
+        return r;
+      }).catch(() => caches.match(evt.request))
+    );
+  }
 });

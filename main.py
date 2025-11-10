@@ -14,7 +14,7 @@ import numpy as np
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-# Modelo: link direto (.pt ou .onnx). Mantém seu caminho atual.
+# Modelo: mantém seu caminho (se usar MODEL_URL, baixa automaticamente)
 MODEL_URL = os.getenv(
     "MODEL_URL",
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"
@@ -25,7 +25,6 @@ MODEL_PATH = (
     else "best.pt"
 )
 
-# Presets (mantém baixos para rodar em CPU)
 PRESET = os.getenv("PRESET", "ULTRA")
 PRESETS = {
     "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=12),
@@ -35,7 +34,6 @@ PRESETS = {
     "MAX_RECALL":  dict(imgsz=640, conf=0.15, iou=0.45, max_det=16),
 }
 CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
-
 RETURN_IMAGE = True
 
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
@@ -137,9 +135,7 @@ async def predict(file: UploadFile = File(...)):
     try:
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
-
-        # acelerar em CPU, mantendo proporção
-        image.thumbnail((1024, 1024))
+        image.thumbnail((1024, 1024))  # acelera mantendo proporção
 
         res = model.predict(
             image,
@@ -211,7 +207,7 @@ def warmup():
                       max_det=1, device="cpu", verbose=False)
     return {"ok": True}
 
-# ===================== CHAT (usa JSON local) =====================
+# ===================== KB JSON =====================
 @app.get("/kb.json")
 def kb_json():
     p = os.path.join(STATIC_DIR, "pepper_info.json")
@@ -219,7 +215,7 @@ def kb_json():
         return JSONResponse({"detail": "pepper_info.json não encontrado em /static"}, status_code=404)
     return FileResponse(p, media_type="application/json")
 
-# ===================== UI: /ui (principal) =====================
+# ===================== UI PRINCIPAL =====================
 @app.get("/ui")
 def ui():
     html = r"""
@@ -291,8 +287,6 @@ const API = window.location.origin;
 let currentFile = null;
 let stream = null;
 let lastClass = null;
-
-function setStatus(_){ /* removido o "Pronto" */ }
 
 async function compressImage(file, maxSide=1024, quality=0.85){
   return new Promise((resolve,reject)=>{
@@ -404,200 +398,182 @@ document.getElementById('btnSend').onclick = async () => {
 """
     return HTMLResponse(apply_pwa(html))
 
-# ===================== UI: /info (chat simples com JSON local) =====================
+# ===================== CHAT — estilo WhatsApp com emojis 1–8 =====================
+ALIASES = {
+    "biquinho": ["biquinho", "pimenta biquinho", "sweet drop"],
+    "bode": ["bode", "pimenta de bode", "bode vermelha", "bode amarela"],
+    "cambuci": ["cambuci", "chapéu-de-frade", "chapeu de frade", "chapéu de frade"],
+    "chilli": ["chilli", "chili", "pimenta chili", "pimenta chilli"],
+    "fidalga": ["fidalga", "fidalga-pepper"],
+    "habanero": ["habanero", "pimenta habanero"],
+    "jalapeno": ["jalapeno", "jalapeño", "jalapenho", "pimenta jalapeno"],
+    "scotch": ["scotch", "scotch bonnet", "scotch-bonnet", "scotchbonnet"]
+}
+
 @app.get("/info")
-def info(req: Request):
-    html = r"""
+def info(req: Request, pepper: Optional[str] = None):
+    # menu com emojis 1–8; aceita nome/sinônimo livre
+    html = f"""
 <!doctype html>
 <html lang="pt-br">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-  <title>Chat: Pimenta</title>
-  <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
-  <style>
-    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a;}
-    *{box-sizing:border-box}
-    html,body{margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
-    .wrap{max-width:980px;margin:auto;padding:12px}
-    header{display:flex;align-items:center;gap:10px}
-    header h1{font-size:18px;margin:0}
-    .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;box-shadow:0 4px 24px rgba(15,23,42,.06)}
-    .messages{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff;height:58vh;min-height:290px;overflow:auto}
-    .msg{margin:6px 0;display:flex}
-    .msg.me{justify-content:flex-end}
-    .bubble{max-width:80%;padding:8px 10px;border-radius:12px;border:1px solid var(--line);white-space:pre-wrap}
-    .bubble.me{background:#eef2ff;border-color:#c7d2fe}
-    .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
-    .chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px}
-    .dock{position:sticky;bottom:0;left:0;right:0;background:#ffffffd9;border-top:1px solid var(--line);padding:10px;border-radius:12px;backdrop-filter:saturate(140%) blur(6px)}
-    .row{display:flex;gap:8px;align-items:center}
-    input[type=text]{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:inherit}
-    .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
-    a.back{ text-decoration:none; }
-    footer{color:#64748b;font-size:12px;text-align:center;margin-top:12px}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Chat: Pimentas</title>
+<link rel="icon" href="/static/pimenta-logo.png">
+<style>
+  :root {{ --bg:#F6F8F3; --card:#fff; --fg:#0b1726; --muted:#6b7280; --brand:#0EA35A; --line:#e2e8f0; }}
+  html, body {{ margin:0; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui; }}
+  .wrap {{ max-width:900px; margin:12px auto; padding:8px 12px; }}
+  .card {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 2px 6px rgba(0,0,0,.06); }}
+  .row {{ display:flex; gap:10px; align-items:center; justify-content:space-between; }}
+  .msg {{ background:#f3f4f6; border-radius:14px; padding:12px; margin:10px 0; }}
+  .me {{ background:#e0f2fe; margin-left:auto; max-width:70%; white-space:pre-wrap; }}
+  .bot {{ background:#ecfccb; max-width:80%; white-space:pre-wrap; }}
+  .title {{ font-size:18px; font-weight:700; margin:6px 0 2px; }}
+  .muted {{ color:var(--muted); font-size:13px }}
+  .btn {{ border:0; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:12px; font-weight:600; cursor:pointer; text-decoration:none }}
+  .btn.brand {{ background:var(--brand); color:#fff; }}
+  #footer {{ position:sticky; bottom:0; background:var(--bg); padding:8px 0; }}
+  input, button {{ font:inherit; }}
+  #input {{ width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--line); }}
+</style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <a class="back" href="/ui"><button class="btn">← Voltar</button></a>
-    <h1 id="title">Chat</h1>
-  </header>
-
-  <div class="card" style="margin-top:8px">
-    <div class="chips">
-      <span class="chip" data-q="O que é?">O que é?</span>
-      <span class="chip" data-q="Usos e receitas">Usos/receitas</span>
-      <span class="chip" data-q="Conservação">Conservação</span>
-      <span class="chip" data-q="Substituições">Substituições</span>
-      <span class="chip" data-q="Origem">Origem</span>
-    </div>
-    <div id="messages" class="messages"></div>
-
-    <div class="dock">
-      <div class="row">
-        <input id="inputMsg" type="text" placeholder="Digite 1–5 (atalhos) ou faça uma pergunta livre..."/>
-        <button id="btnSend" class="btn accent">Enviar</button>
-      </div>
-    </div>
+  <div class="row">
+    <div class="title">Chat: <span id="pep">{"".join(pepper or "")}</span></div>
+    <a href="/ui" class="btn">← Voltar</a>
   </div>
 
-  <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
+  <div id="chat" class="card"></div>
+
+  <div id="footer" class="row" style="gap:8px;">
+    <input id="input" placeholder="Digite 1–8 ou o nome/sinônimo (ex.: chilli, jalapeño, cambuci)…">
+    <button id="send" class="btn brand">Enviar</button>
+  </div>
 </div>
 
 <script>
-const qs = new URLSearchParams(location.search);
-const API = window.location.origin;
-const pepper = qs.get("pepper") || ""; // vem da tela principal
+const KB_URL = '/static/pepper_info.json';
+let KB = {{}};
+let current = {json.dumps(pepper or "")};
 
-let KB = null;     // JSON completo
-let DOC = null;    // doc da pimenta
+const MENU = [
+  "1️⃣ O que é",
+  "2️⃣ Ardência (SHU)",
+  "3️⃣ Usos/Receitas",
+  "4️⃣ Conservação",
+  "5️⃣ Substituições",
+  "6️⃣ Origem",
+  "7️⃣ Curiosidades/Extras",
+  "8️⃣ Trocar pimenta"
+].join("\\n");
 
-function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
-function scrollEnd(){ const box=document.getElementById('messages'); box.scrollTop = box.scrollHeight; }
-function putMsg(text, me=false){
-  const wrap = el("div","msg"+(me?" me":""));
-  const b = el("div","bubble"+(me?" me":""), null);
-  b.innerHTML = String(text||"").replace(/\n/g,"<br>");
-  if(me) b.classList.add("me");
-  wrap.appendChild(b);
-  document.getElementById('messages').appendChild(wrap);
-  scrollEnd();
+const ALIASES = {json.dumps(ALIASES)};
+
+function dom(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+function push(text, who){
+  const el = dom('div', 'msg ' + (who==='me'?'me':'bot'), text);
+  document.getElementById('chat').appendChild(el);
+  el.scrollIntoView({behavior:'smooth', block:'end'});
 }
+function me(t){ push(t,'me'); }
+function bot(t){ push(t,'bot'); }
 
 function norm(s){
-  return (s||"")
-    .toLowerCase()
-    .replace(/-?pepper/g,"")
+  return (s||"").toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .replace(/[^a-z0-9]/g,'');
+    .replace(/-?pepper/g,'')
+    .replace(/[^a-z0-9\\s-]/g,'').trim();
 }
 
-async function loadKB(){
-  try{
-    const r = await fetch("/static/pepper_info.json", {cache:"no-store"});
-    KB = await r.json();
-  }catch(e){ KB = {}; }
-}
-
-function pickDoc(name){
-  if(!KB || typeof KB !== "object") return null;
-  const keys = Object.keys(KB);
-  const want = norm(name);
-  const idx = {};
-  for(const k of keys){ idx[norm(k)] = k; }
-  if(idx[want]) return KB[idx[want]];
-  for(const k of keys){
-    const nk = norm(k);
-    if(want && (want.includes(nk) || nk.includes(want))) return KB[k];
+function matchPepper(q){
+  const n = norm(q);
+  if(!n) return null;
+  // por chave direta
+  for(const k of Object.keys(KB)){ if(norm(k)===n) return k; }
+  // por alias
+  for(const [k, arr] of Object.entries(ALIASES)){
+    for(const a of arr){ if(norm(a)===n) return k; }
   }
+  // substring aproximada
+  for(const k of Object.keys(KB)){ if(norm(k).includes(n) || n.includes(norm(k))) return k; }
   return null;
 }
 
-function answerLocal(q){
-  if(!DOC){
-    return { text:"Ainda não tenho dados desta pimenta.", weak:true };
+function replyFor(pe, opt){
+  const info = KB[pe] || {{}};
+  switch(opt){
+    case '1': return info.descricao || 'Sem descrição.';
+    case '2': return info.shu ? ('Ardência (SHU): '+info.shu) : 'Sem SHU.';
+    case '3': return (info.usos ? 'Usos: '+info.usos+'\\n' : '') + (info.receitas ? 'Receitas: '+info.receitas : (info.usos?'':'Sem sugestões.'));
+    case '4': return info.conservacao || 'Sem orientações de conservação.';
+    case '5': return (info.substituicoes || info.substituicoes_sugeridas || info.substitutos || 'Sem substituições.');
+    case '6': return info.origem || 'Sem dados de origem.';
+    case '7': return info.extras || 'Sem extras.';
+    case '8': return 'Ok! Digite o *nome* da pimenta para trocar (ex.: jalapeño, chilli, cambuci).';
+    default : return 'Opção inválida.\\n\\n'+MENU;
   }
-  const msg = (q||"").toLowerCase();
-  const parts = [];
-  const has = (k) => DOC[k]!=null && String(DOC[k]).trim()!=="";
-
-  if(/(o que|o que é|\bo que e\b|\bdefini|sobre )/.test(msg)){
-    if(has("descricao")) parts.push(String(DOC.descricao));
-  }
-  if(/uso|receita|culin|molho|chutney|prato|cozinhar/.test(msg)){
-    if(has("usos")) parts.push("Usos: "+String(DOC.usos));
-    if(has("receitas")) parts.push("Receitas: "+String(DOC.receitas));
-  }
-  if(/conserva|armazen|guardar|dur[aá]vel/.test(msg)){
-    if(has("conservacao")) parts.push("Conservação: "+String(DOC.conservacao));
-  }
-  if(/substitui|alternativa|trocar/.test(msg)){
-    const s = DOC.substituicoes || DOC.substituicoes_sugeridas || DOC.substitutos;
-    if(s) parts.push("Substituições: "+String(s));
-  }
-  if(/origem|hist[oó]ria|cultivo|plantio/.test(msg)){
-    if(has("origem")) parts.push("Origem: "+String(DOC.origem));
-  }
-
-  if(!parts.length){
-    const nome = DOC.nome || pepper || "pimenta";
-    const base = [];
-    if(has("descricao")) base.push("Sobre "+nome+": "+String(DOC.descricao));
-    if(has("usos"))      base.push("Usos: "+String(DOC.usos));
-    if(has("receitas"))  base.push("Receitas: "+String(DOC.receitas));
-    if(has("conservacao")) base.push("Conservação: "+String(DOC.conservacao));
-    if(has("origem"))    base.push("Origem: "+String(DOC.origem));
-    return { text: base.join("\\n\\n") || "Sem informações locais registradas.", weak:true };
-  }
-  return { text: parts.join("\\n\\n"), weak:false };
 }
 
-async function ask(q){
-  let L = answerLocal(q);
-  return L.text || "Não encontrei uma boa resposta agora.";
+async function boot(){
+  try{ const r = await fetch(KB_URL, {{cache:'no-store'}}); KB = await r.json(); } catch(e){ KB = {{}}; }
+  bot('Escolha pelo *menu 1–8* ou digite o *nome/sinônimo* da pimenta.'); 
+  if(current){
+    const m = matchPepper(current); 
+    if(m && KB[m]){{ current = m; bot('Pimenta atual: *'+m+'*'); }}
+  }
+  bot(MENU);
 }
 
-document.getElementById('btnSend').onclick = async () => {
-  const input = document.getElementById('inputMsg');
-  let q = (input.value || "").trim();
-  if(!q) return;
-  input.value = "";
+function send(){
+  const el = document.getElementById('input');
+  const v = (el.value||'').trim();
+  if(!v) return;
+  el.value = '';
+  me(v);
 
-  if(/^\s*[1-5]\s*$/.test(q)){
-    const n = Number(q.trim());
-    const map = {1:"O que é?",2:"Usos e receitas",3:"Conservação",4:"Substituições",5:"Origem"};
-    q = map[n] || q;
+  // número do menu (1–8)
+  if(/^\\s*[1-8]\\s*$/.test(v) && current){
+    const ans = replyFor(current, v.trim());
+    bot(ans);
+    if(v.trim()==='8') current = ""; // trocar
+    return;
+  }
+  if(/^\\s*8\\s*$/.test(v)){ bot('Digite o *nome* da pimenta.'); current=""; return; }
+
+  // tentativa de setar pimenta pelo nome/sinônimo
+  const m = matchPepper(v);
+  if(m && KB[m]){{ current = m; bot('Ok! *'+m+'* selecionada.'); bot(MENU); return; }}
+
+  // pergunta livre: tenta responder com base nos campos
+  if(current && KB[current]){
+    const q = v.toLowerCase();
+    const info = KB[current];
+    const parts = [];
+    if(/(o que|defini|sobre)/.test(q) && info.descricao) parts.push(info.descricao);
+    if(/(uso|receita|culin|molho)/.test(q)){ if(info.usos) parts.push('Usos: '+info.usos); if(info.receitas) parts.push('Receitas: '+info.receitas); }
+    if(/(conserva|armazen|guardar)/.test(q) && info.conservacao) parts.push('Conservação: '+info.conservacao);
+    if(/(substitu)/.test(q)){ const s = info.substituicoes||info.substituicoes_sugeridas||info.substitutos; if(s) parts.push('Substituições: '+s); }
+    if(/(origem|hist)/.test(q) && info.origem) parts.push('Origem: '+info.origem);
+    bot(parts.length ? parts.join('\\n\\n') : 'Não encontrei na base local. Use o menu 1–8 ou troque a pimenta (8️⃣).');
+    return;
   }
 
-  putMsg(q,true);
-  const a = await ask(q);
-  putMsg(a,false);
-};
+  bot('Não entendi 🤷. Use *1–8* ou o *nome/sinônimo* da pimenta.\\n\\n'+MENU);
+}
 
-document.querySelector(".chips").addEventListener("click",(e)=>{
-  const t = e.target.closest(".chip"); if(!t) return;
-  const q = t.getAttribute("data-q");
-  putMsg(q,true);
-  ask(q).then(a=>putMsg(a,false));
-});
-
-(async function(){
-  await loadKB();
-  DOC = pickDoc(pepper) || null;
-  const title = document.getElementById('title');
-  title.textContent = "Chat: " + (DOC?.nome || pepper || "Pimenta");
-  putMsg("Use os botões ou faça sua pergunta. Respondo com base no arquivo local.", false);
-})();
+document.getElementById('send').addEventListener('click', send);
+document.getElementById('input').addEventListener('keydown', (e)=>{{ if(e.key==='Enter') send(); }});
+boot();
 </script>
 </body>
 </html>
 """
     return HTMLResponse(apply_pwa(html))
 
-# ===================== PWA: manifest, sw e injeção de splash =====================
+# ===================== PWA: manifest, sw e splash injection =====================
 @app.get("/manifest.webmanifest", include_in_schema=False)
 def pwa_manifest():
     return FileResponse("static/manifest.webmanifest",
@@ -607,7 +583,6 @@ def pwa_manifest():
 def pwa_sw():
     return FileResponse("static/sw.js", media_type="text/javascript")
 
-# Cabeçalho + overlay (1.8s) + registro do SW injetados nas páginas
 PWA_HEAD = """
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#16a34a">
@@ -623,42 +598,22 @@ PWA_HEAD = """
   @keyframes fill{to{width:100%}}
 </style>
 """
-
-PWA_BODY_START = """
-<div id="pwa-splash" aria-hidden="true"><div class="bar"></div></div>
-"""
-
+PWA_BODY_START = """<div id="pwa-splash" aria-hidden="true"><div class="bar"></div></div>"""
 PWA_FOOT = """
 <script>
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js', { scope: '/' });
-  }
-  let _t0=performance.now();
-  const MIN=1800; // 1.8s
-  function hideSplash(){
-    const el=document.getElementById('pwa-splash');
-    if(el){ el.classList.add('hide-splash'); setTimeout(()=>el.remove(),300); }
-  }
-  window.addEventListener('load', ()=>{
-    const dt=performance.now()-_t0;
-    setTimeout(hideSplash, Math.max(0, MIN-dt));
-  });
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js', { scope: '/' }); }
+  let _t0=performance.now(); const MIN=1800;
+  function hideSplash(){ const el=document.getElementById('pwa-splash'); if(el){ el.classList.add('hide-splash'); setTimeout(()=>el.remove(),300); } }
+  window.addEventListener('load', ()=>{ const dt=performance.now()-_t0; setTimeout(hideSplash, Math.max(0, MIN-dt)); });
 </script>
 """
-
 def apply_pwa(html: str) -> str:
-    # injeta <link rel="manifest"> + CSS do splash no <head>
-    if "</head>" in html:
-        html = html.replace("</head>", PWA_HEAD + "</head>", 1)
-    # injeta o container do splash logo após <body>
-    if "<body>" in html:
-        html = html.replace("<body>", "<body>" + PWA_BODY_START, 1)
-    # registra SW e esconde splash ao final do body
-    if "</body>" in html:
-        html = html.replace("</body>", PWA_FOOT + "</body>", 1)
+    if "</head>" in html: html = html.replace("</head>", PWA_HEAD + "</head>", 1)
+    if "<body>" in html:  html = html.replace("<body>", "<body>" + PWA_BODY_START, 1)
+    if "</body>" in html: html = html.replace("</body>", PWA_FOOT + "</body>", 1)
     return html
 
-# ===================== ROOT REDIRECT =====================
+# ===================== ROOT → /ui =====================
 @app.get("/", include_in_schema=False)
 def root_redirect():
     return RedirectResponse(url="/ui")

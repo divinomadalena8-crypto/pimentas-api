@@ -1,5 +1,5 @@
 // Versão do cache (troque ao publicar para forçar atualização)
-const CACHE_NAME = 'pimentas-v1';
+const CACHE_NAME = 'pimentas-v4';
 
 // “App shell”: páginas e assets estáticos
 const APP_SHELL = [

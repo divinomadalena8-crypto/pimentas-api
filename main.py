@@ -611,6 +611,8 @@ function msgByOption(k, opt){
     case "5": return d.substituicoes || d["substituições"] || d.substituicoes_sugeridas || `Sem substituições sugeridas para ${nm}.`;
     case "6": return d.origem || `Origem não registrada para ${nm}.`;
     case "7": return d.curiosidades || d.extras || `Sem curiosidades adicionais registradas para ${nm}.`;
+    case "8":   `💡 Você também pode digitar o *nome/sinônimo* da pimenta (ex.: jalapeno/jalapeño, chilli, biquinho…).`
+  .join("\n")`;
     default:  return menuText(d.nome || "pimenta");
   }
 }
@@ -662,7 +664,7 @@ document.getElementById("send").onclick = () => {
     // default amigável
     k = keyFromAny("Habanero-Pepper") || Object.keys(KB)[0];
   }
-  addMsg("Use os botões ou digite o nome/sinônimo. Respondo com base no arquivo local.");
+  addMsg("Use os botões ou digite o nome/sinônimo.");
   setPepperByKey(k);
 })();
 </script>
@@ -670,3 +672,4 @@ document.getElementById("send").onclick = () => {
 </html>
 """
     return HTMLResponse(content=html)
+

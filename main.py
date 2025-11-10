@@ -399,6 +399,11 @@ document.getElementById('btnSend').onclick = async () => {
     return HTMLResponse(apply_pwa(html))
 
 # ===================== CHAT — estilo WhatsApp com emojis 1–8 =====================
+from typing import Optional
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+import json
+
 ALIASES = {
     "biquinho": ["biquinho", "pimenta biquinho", "sweet drop"],
     "bode": ["bode", "pimenta de bode", "bode vermelha", "bode amarela"],
@@ -412,8 +417,12 @@ ALIASES = {
 
 @app.get("/info")
 def info(req: Request, pepper: Optional[str] = None):
-    # menu com emojis 1–8; aceita nome/sinônimo livre
-    html = f"""
+    # Serializa dados que vamos injetar
+    aliases_json  = json.dumps(ALIASES, ensure_ascii=False)
+    current_json  = json.dumps(pepper or "", ensure_ascii=False)
+
+    # HTML SEM f-string (usa marcadores __CURRENT__ e __ALIASES__)
+    html = r"""
 <!doctype html>
 <html lang="pt-br">
 <head>
@@ -422,27 +431,27 @@ def info(req: Request, pepper: Optional[str] = None):
 <title>Chat: Pimentas</title>
 <link rel="icon" href="/static/pimenta-logo.png">
 <style>
-  :root {{ --bg:#F6F8F3; --card:#fff; --fg:#0b1726; --muted:#6b7280; --brand:#0EA35A; --line:#e2e8f0; }}
-  html, body {{ margin:0; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui; }}
-  .wrap {{ max-width:900px; margin:12px auto; padding:8px 12px; }}
-  .card {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 2px 6px rgba(0,0,0,.06); }}
-  .row {{ display:flex; gap:10px; align-items:center; justify-content:space-between; }}
-  .msg {{ background:#f3f4f6; border-radius:14px; padding:12px; margin:10px 0; }}
-  .me {{ background:#e0f2fe; margin-left:auto; max-width:70%; white-space:pre-wrap; }}
-  .bot {{ background:#ecfccb; max-width:80%; white-space:pre-wrap; }}
-  .title {{ font-size:18px; font-weight:700; margin:6px 0 2px; }}
-  .muted {{ color:var(--muted); font-size:13px }}
-  .btn {{ border:0; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:12px; font-weight:600; cursor:pointer; text-decoration:none }}
-  .btn.brand {{ background:var(--brand); color:#fff; }}
-  #footer {{ position:sticky; bottom:0; background:var(--bg); padding:8px 0; }}
-  input, button {{ font:inherit; }}
-  #input {{ width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--line); }}
+  :root { --bg:#F6F8F3; --card:#fff; --fg:#0b1726; --muted:#6b7280; --brand:#0EA35A; --line:#e2e8f0; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui; }
+  .wrap { max-width:900px; margin:12px auto; padding:8px 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 2px 6px rgba(0,0,0,.06); }
+  .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+  .msg { background:#f3f4f6; border-radius:14px; padding:12px; margin:10px 0; }
+  .me  { background:#e0f2fe; margin-left:auto; max-width:70%; white-space:pre-wrap; }
+  .bot { background:#ecfccb; max-width:80%; white-space:pre-wrap; }
+  .title { font-size:18px; font-weight:700; margin:6px 0 2px; }
+  .muted { color:var(--muted); font-size:13px }
+  .btn { border:0; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:12px; font-weight:600; cursor:pointer; text-decoration:none }
+  .btn.brand { background:var(--brand); color:#fff; }
+  #footer { position:sticky; bottom:0; background:var(--bg); padding:8px 0; }
+  input, button { font:inherit; }
+  #input { width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--line); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="row">
-    <div class="title">Chat: <span id="pep">{"".join(pepper or "")}</span></div>
+    <div class="title">Chat: <span id="pep"></span></div>
     <a href="/ui" class="btn">← Voltar</a>
   </div>
 
@@ -456,8 +465,8 @@ def info(req: Request, pepper: Optional[str] = None):
 
 <script>
 const KB_URL = '/static/pepper_info.json';
-let KB = {{}};
-let current = {json.dumps(pepper or "")};
+let KB = {};
+let current = __CURRENT__;
 
 const MENU = [
   "1️⃣ O que é",
@@ -468,9 +477,9 @@ const MENU = [
   "6️⃣ Origem",
   "7️⃣ Curiosidades/Extras",
   "8️⃣ Trocar pimenta"
-].join("\\n");
+].join("\n");
 
-const ALIASES = {json.dumps(ALIASES)};
+const ALIASES = __ALIASES__;
 
 function dom(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
 function push(text, who){
@@ -485,44 +494,42 @@ function norm(s){
   return (s||"").toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .replace(/-?pepper/g,'')
-    .replace(/[^a-z0-9\\s-]/g,'').trim();
+    .replace(/[^a-z0-9\s-]/g,'').trim();
 }
 
 function matchPepper(q){
   const n = norm(q);
   if(!n) return null;
-  // por chave direta
   for(const k of Object.keys(KB)){ if(norm(k)===n) return k; }
-  // por alias
   for(const [k, arr] of Object.entries(ALIASES)){
     for(const a of arr){ if(norm(a)===n) return k; }
   }
-  // substring aproximada
   for(const k of Object.keys(KB)){ if(norm(k).includes(n) || n.includes(norm(k))) return k; }
   return null;
 }
 
 function replyFor(pe, opt){
-  const info = KB[pe] || {{}};
+  const info = KB[pe] || {};
   switch(opt){
     case '1': return info.descricao || 'Sem descrição.';
     case '2': return info.shu ? ('Ardência (SHU): '+info.shu) : 'Sem SHU.';
-    case '3': return (info.usos ? 'Usos: '+info.usos+'\\n' : '') + (info.receitas ? 'Receitas: '+info.receitas : (info.usos?'':'Sem sugestões.'));
+    case '3': return (info.usos ? 'Usos: '+info.usos+'\n' : '') + (info.receitas ? 'Receitas: '+info.receitas : (info.usos?'':'Sem sugestões.'));
     case '4': return info.conservacao || 'Sem orientações de conservação.';
     case '5': return (info.substituicoes || info.substituicoes_sugeridas || info.substitutos || 'Sem substituições.');
     case '6': return info.origem || 'Sem dados de origem.';
     case '7': return info.extras || 'Sem extras.';
     case '8': return 'Ok! Digite o *nome* da pimenta para trocar (ex.: jalapeño, chilli, cambuci).';
-    default : return 'Opção inválida.\\n\\n'+MENU;
+    default : return 'Opção inválida.\n\n'+MENU;
   }
 }
 
 async function boot(){
-  try{ const r = await fetch(KB_URL, {{cache:'no-store'}}); KB = await r.json(); } catch(e){ KB = {{}}; }
-  bot('Escolha pelo *menu 1–8* ou digite o *nome/sinônimo* da pimenta.'); 
+  try{ const r = await fetch(KB_URL, {cache:'no-store'}); KB = await r.json(); } catch(e){ KB = {}; }
+  document.getElementById('pep').textContent = current || '';
+  bot('Escolha pelo *menu 1–8* ou digite o *nome/sinônimo* da pimenta.');
   if(current){
-    const m = matchPepper(current); 
-    if(m && KB[m]){{ current = m; bot('Pimenta atual: *'+m+'*'); }}
+    const m = matchPepper(current);
+    if(m && KB[m]){ current = m; bot('Pimenta atual: *'+m+'*'); }
   }
   bot(MENU);
 }
@@ -534,20 +541,17 @@ function send(){
   el.value = '';
   me(v);
 
-  // número do menu (1–8)
-  if(/^\\s*[1-8]\\s*$/.test(v) && current){
+  if(/^\s*[1-8]\s*$/.test(v) && current){
     const ans = replyFor(current, v.trim());
     bot(ans);
-    if(v.trim()==='8') current = ""; // trocar
+    if(v.trim()==='8') current = "";
     return;
   }
-  if(/^\\s*8\\s*$/.test(v)){ bot('Digite o *nome* da pimenta.'); current=""; return; }
+  if(/^\s*8\s*$/.test(v)){ bot('Digite o *nome* da pimenta.'); current=""; return; }
 
-  // tentativa de setar pimenta pelo nome/sinônimo
   const m = matchPepper(v);
-  if(m && KB[m]){{ current = m; bot('Ok! *'+m+'* selecionada.'); bot(MENU); return; }}
+  if(m && KB[m]){ current = m; document.getElementById('pep').textContent = m; bot('Ok! *'+m+'* selecionada.'); bot(MENU); return; }
 
-  // pergunta livre: tenta responder com base nos campos
   if(current && KB[current]){
     const q = v.toLowerCase();
     const info = KB[current];
@@ -557,21 +561,24 @@ function send(){
     if(/(conserva|armazen|guardar)/.test(q) && info.conservacao) parts.push('Conservação: '+info.conservacao);
     if(/(substitu)/.test(q)){ const s = info.substituicoes||info.substituicoes_sugeridas||info.substitutos; if(s) parts.push('Substituições: '+s); }
     if(/(origem|hist)/.test(q) && info.origem) parts.push('Origem: '+info.origem);
-    bot(parts.length ? parts.join('\\n\\n') : 'Não encontrei na base local. Use o menu 1–8 ou troque a pimenta (8️⃣).');
+    bot(parts.length ? parts.join('\n\n') : 'Não encontrei na base local. Use o menu 1–8 ou troque a pimenta (8️⃣).');
     return;
   }
 
-  bot('Não entendi 🤷. Use *1–8* ou o *nome/sinônimo* da pimenta.\\n\\n'+MENU);
+  bot('Não entendi 🤷. Use *1–8* ou o *nome/sinônimo* da pimenta.\n\n'+MENU);
 }
 
 document.getElementById('send').addEventListener('click', send);
-document.getElementById('input').addEventListener('keydown', (e)=>{{ if(e.key==='Enter') send(); }});
+document.getElementById('input').addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
 boot();
 </script>
 </body>
 </html>
 """
+    # injeta dados sem f-string
+    html = html.replace("__CURRENT__", current_json).replace("__ALIASES__", aliases_json)
     return HTMLResponse(apply_pwa(html))
+
 
 # ===================== PWA: manifest, sw e splash injection =====================
 @app.get("/manifest.webmanifest", include_in_schema=False)
@@ -622,3 +629,4 @@ def root_redirect():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+

@@ -1,36 +1,12 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.9
+pillow==10.4.0
+numpy==1.26.4
+ultralytics==8.3.34
+onnxruntime==1.19.2
+requests==2.32.3
 
-# YOLOv8 + ONNX
-ultralytics>=8.2,<9
-onnx>=1.15
-onnxruntime>=1.18
-
-# Utilidades
-numpy>=2.0
-pillow>=10.0
-requests>=2.32
-python-multipart>=0.0.9
-
-# IA opcional para o /ai
-openai>=1.40
-
-# para busca web (RAG)
-tavily-python>=0.3.3
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# (opcional, só se você realmente usar /ai e RAG)
+openai==1.46.0
+tavily-python==0.3.3

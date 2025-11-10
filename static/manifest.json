@@ -1,0 +1,13 @@
+{
+  "name": "Identificação de Pimentas",
+  "short_name": "Pimentas",
+  "start_url": "/ui/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#16a34a",
+  "icons": [
+    { "src": "/static/icons/pimenta-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icons/pimenta-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

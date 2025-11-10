@@ -238,6 +238,36 @@ def ui():
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Identificação de Pimentas</title>
+
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#16a34a">
+<link rel="icon" type="image/png" href="/static/pimenta-logo.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/pimenta-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- Splash em página (1,8 s): -->
+<style>
+  #pwa-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    display: flex; align-items: flex-end; justify-content: center;
+    transition: opacity .28s ease; opacity: 1;
+  }
+  #pwa-splash .bar {
+    width: 56%; height: 12px; margin: 28px auto 10%;
+    border-radius: 999px; background: #e2e8f0; overflow: hidden;
+  }
+  #pwa-splash .bar::after {
+    content: ""; display: block; height: 100%;
+    width: 0%; background: #16a34a; animation: fill 1.8s linear forwards;
+  }
+  @keyframes fill { to { width: 100%; } }
+  .hide-splash { opacity: 0; pointer-events: none; }
+</style>
+
+
+  
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
     :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; --accent2:#2563eb; }
@@ -440,6 +470,38 @@ document.getElementById('btnSend').onclick = async () => {
   }
 };
 </script>
+
+<script>
+  // SW + A2HS
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js');
+  }
+  let _deferredPrompt=null;
+  window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
+
+  // Splash de 1,8s (ou até a página carregar, o que levar mais tempo)
+  const hideSplash = () => {
+    const el = document.getElementById('pwa-splash');
+    if (el) el.classList.add('hide-splash'), setTimeout(() => el.remove(), 300);
+  };
+  // Garante 1,8 s visíveis
+  const MIN = 1800;
+  const t0 = performance.now();
+  window.addEventListener('load', () => {
+    const dt = performance.now() - t0;
+    const wait = Math.max(0, MIN - dt);
+    setTimeout(hideSplash, wait);
+  });
+  // Se quiser expor um botão "Instalar" na UI:
+  // document.getElementById('btnInstall')?.addEventListener('click', async ()=>{
+  //   if(!_deferredPrompt) return;
+  //   _deferredPrompt.prompt(); _deferredPrompt = null;
+  // });
+</script>
+
+
+
+
 </body>
 </html>
 """
@@ -455,6 +517,37 @@ def info():
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
   <title>Chat de Pimentas</title>
+
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#16a34a">
+<link rel="icon" type="image/png" href="/static/pimenta-logo.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/pimenta-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- Splash em página (1,8 s): -->
+<style>
+  #pwa-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    display: flex; align-items: flex-end; justify-content: center;
+    transition: opacity .28s ease; opacity: 1;
+  }
+  #pwa-splash .bar {
+    width: 56%; height: 12px; margin: 28px auto 10%;
+    border-radius: 999px; background: #e2e8f0; overflow: hidden;
+  }
+  #pwa-splash .bar::after {
+    content: ""; display: block; height: 100%;
+    width: 0%; background: #16a34a; animation: fill 1.8s linear forwards;
+  }
+  @keyframes fill { to { width: 100%; } }
+  .hide-splash { opacity: 0; pointer-events: none; }
+</style>
+
+
+
+  
   <style>
     :root{ --bg:#eef2f7; --chat:#fefefe; --mine:#dbeafe; --their:#f1f5f9; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
     *{box-sizing:border-box}
@@ -666,7 +759,39 @@ document.getElementById("send").onclick = () => {
   setPepperByKey(k);
 })();
 </script>
+
+<script>
+  // SW + A2HS
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js');
+  }
+  let _deferredPrompt=null;
+  window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
+
+  // Splash de 1,8s (ou até a página carregar, o que levar mais tempo)
+  const hideSplash = () => {
+    const el = document.getElementById('pwa-splash');
+    if (el) el.classList.add('hide-splash'), setTimeout(() => el.remove(), 300);
+  };
+  // Garante 1,8 s visíveis
+  const MIN = 1800;
+  const t0 = performance.now();
+  window.addEventListener('load', () => {
+    const dt = performance.now() - t0;
+    const wait = Math.max(0, MIN - dt);
+    setTimeout(hideSplash, wait);
+  });
+  // Se quiser expor um botão "Instalar" na UI:
+  // document.getElementById('btnInstall')?.addEventListener('click', async ()=>{
+  //   if(!_deferredPrompt) return;
+  //   _deferredPrompt.prompt(); _deferredPrompt = null;
+  // });
+</script>
+
+
+
 </body>
 </html>
 """
     return HTMLResponse(content=html)
+

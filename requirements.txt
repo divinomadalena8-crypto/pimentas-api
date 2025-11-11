@@ -1,7 +1,9 @@
 fastapi
 uvicorn[standard]
 python-multipart
-onnxruntime
 opencv-python-headless
 numpy
 pillow
+onnxruntime
+ultralytics
+requests

@@ -1,9 +1,36 @@
-fastapi
-uvicorn[standard]
-python-multipart
-opencv-python-headless
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# YOLOv8 + ONNX
+ultralytics>=8.2,<9
+onnx>=1.15
+onnxruntime>=1.18
+
+# Utilidades
 numpy
-pillow
-onnxruntime
-ultralytics
-requests
+pillow>=10.0
+requests>=2.32
+python-multipart>=0.0.9
+
+# IA opcional para o /ai
+openai>=1.40
+
+# para busca web (RAG)
+tavily-python>=0.3.3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

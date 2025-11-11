@@ -250,7 +250,7 @@ def ui():
 <style>
   #pwa-splash {
     position: fixed; inset: 0; z-index: 9999;
-    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    background: #f7fafc url('/static/icons/splash.png') center 30% / 480px no-repeat;
     display: flex; align-items: flex-end; justify-content: center;
     transition: opacity .28s ease; opacity: 1;
   }
@@ -529,7 +529,7 @@ def info():
 <style>
   #pwa-splash {
     position: fixed; inset: 0; z-index: 9999;
-    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    background: #f7fafc url('/static/icons/splash.png') center 30% / 480px no-repeat;
     display: flex; align-items: flex-end; justify-content: center;
     transition: opacity .28s ease; opacity: 1;
   }
@@ -794,4 +794,5 @@ document.getElementById("send").onclick = () => {
 </html>
 """
     return HTMLResponse(content=html)
+
 

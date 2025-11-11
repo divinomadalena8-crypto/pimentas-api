@@ -474,7 +474,7 @@ document.getElementById('btnSend').onclick = async () => {
 <script>
   // SW + A2HS
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js');
+    navigator.serviceWorker.register('/static/sw.js?v=2');
   }
   let _deferredPrompt=null;
   window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
@@ -704,6 +704,7 @@ function msgByOption(k, opt){
     case "5": return d.substituicoes || d["substituições"] || d.substituicoes_sugeridas || `Sem substituições sugeridas para ${nm}.`;
     case "6": return d.origem || `Origem não registrada para ${nm}.`;
     case "7": return d.curiosidades || d.extras || `Sem curiosidades adicionais registradas para ${nm}.`;
+    case "8": return '💡 Você também pode digitar o *nome/sinônimo* da pimenta (ex.: jalapeno/jalapeño, chilli, biquinho…).'; 
     default:  return menuText(d.nome || "pimenta");
   }
 }
@@ -763,7 +764,7 @@ document.getElementById("send").onclick = () => {
 <script>
   // SW + A2HS
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js');
+    navigator.serviceWorker.register('/static/sw.jsjs?v=2');
   }
   let _deferredPrompt=null;
   window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
@@ -794,5 +795,6 @@ document.getElementById("send").onclick = () => {
 </html>
 """
     return HTMLResponse(content=html)
+
 
 

@@ -1,22 +1,40 @@
-# main.py — Pimentas App (YOLOv8 + UI + Chat) + PWA (manifest + sw + splash 1.8s)
-import os, io, time, threading, base64, uuid, json, requests
-from typing import List, Optional
-from urllib.parse import urlparse
+# main.py — API + UI (YOLOv8 + Chat estilo WhatsApp com sinônimos e fallback)
+# Render-friendly: baixa o modelo em background, serve /ui e /info (chat)
 
-from fastapi import FastAPI, UploadFile, File, Response, Request
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, PlainTextResponse, RedirectResponse
+import os, io, time, threading, base64, uuid, requests
+from urllib.parse import urlparse
+from typing import List, Optional
+
+# Menos threads BLAS em instâncias free
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+
+from fastapi import FastAPI, UploadFile, File, Response
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from PIL import Image
 import numpy as np
 
-# ===================== CONFIG =====================
-os.environ.setdefault("OMP_NUM_THREADS", "2")
-os.environ.setdefault("MKL_NUM_THREADS", "2")
+# YOLO (Ultralytics)
+from ultralytics import YOLO
 
-# Modelo: mantém seu caminho (se usar MODEL_URL, baixa automaticamente)
+# -----------------------------------------------------------------------------
+# App e diretórios estáticos
+# -----------------------------------------------------------------------------
+app = FastAPI(title="Pimentas API/UI")
+
+STATIC_DIR = os.path.join(os.getcwd(), "static")
+ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
+os.makedirs(ANNOT_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# -----------------------------------------------------------------------------
+# Config do modelo
+# -----------------------------------------------------------------------------
 MODEL_URL = os.getenv(
     "MODEL_URL",
+    # Ex.: ONNX do HuggingFace (troque se necessário)
     "https://huggingface.co/bulipucca/pimentas-model/resolve/main/best.onnx"
 )
 MODEL_PATH = (
@@ -25,45 +43,40 @@ MODEL_PATH = (
     else "best.pt"
 )
 
-PRESET = os.getenv("PRESET", "ULTRA")
-PRESETS = {
-    "ULTRA":       dict(imgsz=320, conf=0.35, iou=0.50, max_det=12),
-    "RAPIDO":      dict(imgsz=384, conf=0.30, iou=0.50, max_det=12),
-    "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=12),
-    "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=12),
-    "MAX_RECALL":  dict(imgsz=640, conf=0.15, iou=0.45, max_det=16),
-}
-CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
-RETURN_IMAGE = True
-
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 REQ_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-app = FastAPI(title="Pimentas App")
+# Presets (aqui usamos até 10 caixas)
+PRESET = os.getenv("PRESET", "ULTRA")
+PRESETS = {
+    "ULTRA":       dict(imgsz=384, conf=0.30, iou=0.50, max_det=10),
+    "RAPIDO":      dict(imgsz=352, conf=0.28, iou=0.50, max_det=8),
+    "EQUILIBRADO": dict(imgsz=448, conf=0.30, iou=0.50, max_det=10),
+    "PRECISO":     dict(imgsz=512, conf=0.40, iou=0.55, max_det=12),
+    "MAX_RECALL":  dict(imgsz=640, conf=0.12, iou=0.45, max_det=16),
+}
+CFG = PRESETS.get(PRESET, PRESETS["ULTRA"])
 
-# Static
-STATIC_DIR = os.path.join(os.getcwd(), "static")
-ANNOT_DIR  = os.path.join(STATIC_DIR, "annotated")
-os.makedirs(ANNOT_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+RETURN_IMAGE = True  # salva e retorna anotada
 
-# ===================== ESTADO GLOBAL =====================
-try:
-    from ultralytics import YOLO
-except Exception:
-    YOLO = None
-
-model: Optional["YOLO"] = None
-labels = {}
+# -----------------------------------------------------------------------------
+# Estado global do modelo
+# -----------------------------------------------------------------------------
+model: Optional[YOLO] = None
+labels: dict = {}
 READY = False
-LOAD_ERR = None
+LOAD_ERR: Optional[str] = None
 
-# ===================== HELPERS =====================
+
+# -----------------------------------------------------------------------------
+# Utilidades
+# -----------------------------------------------------------------------------
 def ensure_model_file():
+    """Baixa arquivo de modelo se não existir."""
     if os.path.exists(MODEL_PATH):
         return
     if not MODEL_URL or MODEL_URL.startswith("COLE_AQUI"):
-        raise RuntimeError("Defina MODEL_URL com link direto do modelo (.pt ou .onnx).")
+        raise RuntimeError("Defina MODEL_URL com link direto (.pt ou .onnx).")
     print(f"[init] Baixando modelo: {MODEL_URL}")
     with requests.get(MODEL_URL, headers=REQ_HEADERS, stream=True, timeout=600) as r:
         r.raise_for_status()
@@ -72,6 +85,7 @@ def ensure_model_file():
                 if chunk:
                     f.write(chunk)
     print("[init] Download concluído:", MODEL_PATH)
+
 
 def to_b64_png(np_bgr: np.ndarray) -> Optional[str]:
     try:
@@ -82,14 +96,13 @@ def to_b64_png(np_bgr: np.ndarray) -> Optional[str]:
     except Exception:
         return None
 
+
 def background_load():
-    """Carrega YOLO e marca READY (sem inferência aqui)."""
+    """Carrega YOLO em background para inicialização rápida."""
     global model, labels, READY, LOAD_ERR
     try:
         t0 = time.time()
         ensure_model_file()
-        if YOLO is None:
-            raise RuntimeError("Pacote ultralytics não disponível.")
         m = YOLO(MODEL_PATH)
         try:
             m.fuse()
@@ -104,30 +117,48 @@ def background_load():
         READY = False
         print("[init] ERRO ao carregar modelo:", LOAD_ERR)
 
+
 @app.on_event("startup")
 def on_startup():
     threading.Thread(target=background_load, daemon=True).start()
 
-# ===================== HEALTH =====================
+
+# -----------------------------------------------------------------------------
+# Endpoints API
+# -----------------------------------------------------------------------------
 @app.get("/")
 def health():
     return {
         "status": "ok" if READY else "warming",
         "ready": READY,
         "error": LOAD_ERR,
-        "preset": PRESET,
-        "cfg": CFG,
         "model": MODEL_PATH if MODEL_PATH else None,
         "classes": list(labels.values()) if READY else None,
     }
+
 
 @app.head("/")
 def health_head():
     return Response(status_code=200)
 
-# ===================== PREDICT =====================
+
+@app.get("/warmup")
+def warmup():
+    """Compila caminho e marca pronto (chamada curta)."""
+    t0 = time.time()
+    while not READY and time.time() - t0 < 90:
+        time.sleep(0.5)
+    if not READY:
+        return {"ok": False, "warming_up": True}
+    img = Image.new("RGB", (64, 64), (255, 255, 255))
+    _ = model.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
+                      max_det=1, device="cpu", verbose=False)
+    return {"ok": True}
+
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    """Recebe imagem, roda YOLO e devolve JSON + imagem anotada (URL e base64)."""
     if not READY:
         return JSONResponse({"ok": False, "warming_up": True, "error": LOAD_ERR}, status_code=503)
 
@@ -135,7 +166,7 @@ async def predict(file: UploadFile = File(...)):
     try:
         im_bytes = await file.read()
         image = Image.open(io.BytesIO(im_bytes)).convert("RGB")
-        image.thumbnail((1024, 1024))  # acelera mantendo proporção
+        image.thumbnail((1024, 1024))  # acelera em CPU mantendo proporção
 
         res = model.predict(
             image,
@@ -148,8 +179,6 @@ async def predict(file: UploadFile = File(...)):
         )
         r = res[0]
         preds: List[dict] = []
-        image_b64 = None
-        image_url = None
 
         if r.boxes is not None and len(r.boxes) > 0:
             xyxy = r.boxes.xyxy.cpu().numpy().tolist()
@@ -162,8 +191,10 @@ async def predict(file: UploadFile = File(...)):
                     "bbox_xyxy": [round(x1,2), round(y1,2), round(x2,2), round(y2,2)]
                 })
 
+            image_b64 = None
+            image_url = None
             if RETURN_IMAGE:
-                annotated = r.plot()  # np.ndarray (BGR)
+                annotated = r.plot()  # np.ndarray BGR
                 fname = f"{uuid.uuid4().hex}.png"
                 fpath = os.path.join(ANNOT_DIR, fname)
                 Image.fromarray(annotated[:, :, ::-1]).save(fpath)  # BGR->RGB
@@ -181,7 +212,6 @@ async def predict(file: UploadFile = File(...)):
                 "image_url": image_url
             })
 
-        # Sem detecções
         return JSONResponse({
             "ok": True,
             "inference_time_s": round(time.time() - t0, 3),
@@ -195,27 +225,10 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e), "inference_time_s": round(time.time() - t0, 3)}, status_code=200)
 
-@app.get("/warmup")
-def warmup():
-    t0 = time.time()
-    while not READY and time.time() - t0 < 90:
-        time.sleep(0.5)
-    if not READY:
-        return {"ok": False, "warming_up": True}
-    img = Image.new("RGB", (64, 64), (255, 255, 255))
-    _ = model.predict(img, imgsz=CFG["imgsz"], conf=CFG["conf"], iou=CFG["iou"],
-                      max_det=1, device="cpu", verbose=False)
-    return {"ok": True}
 
-# ===================== KB JSON =====================
-@app.get("/kb.json")
-def kb_json():
-    p = os.path.join(STATIC_DIR, "pepper_info.json")
-    if not os.path.exists(p):
-        return JSONResponse({"detail": "pepper_info.json não encontrado em /static"}, status_code=404)
-    return FileResponse(p, media_type="application/json")
-
-# ===================== UI PRINCIPAL =====================
+# -----------------------------------------------------------------------------
+# Páginas UI
+# -----------------------------------------------------------------------------
 @app.get("/ui")
 def ui():
     html = r"""
@@ -223,11 +236,41 @@ def ui():
 <html lang="pt-br">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Identificação de Pimentas</title>
+
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#16a34a">
+<link rel="icon" type="image/png" href="/static/pimenta-logo.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/pimenta-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- Splash em página (1,8 s): -->
+<style>
+  #pwa-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    display: flex; align-items: flex-end; justify-content: center;
+    transition: opacity .28s ease; opacity: 1;
+  }
+  #pwa-splash .bar {
+    width: 56%; height: 12px; margin: 28px auto 10%;
+    border-radius: 999px; background: #e2e8f0; overflow: hidden;
+  }
+  #pwa-splash .bar::after {
+    content: ""; display: block; height: 100%;
+    width: 0%; background: #16a34a; animation: fill 1.8s linear forwards;
+  }
+  @keyframes fill { to { width: 100%; } }
+  .hide-splash { opacity: 0; pointer-events: none; }
+</style>
+
+
+  
   <link rel="icon" href="/static/pimenta-logo.png" type="image/png" sizes="any">
   <style>
-    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
+    :root{ --bg:#f7fafc; --card:#ffffff; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; --accent2:#2563eb; }
     *{box-sizing:border-box}
     html,body{ margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto }
     .wrap{max-width:980px;margin:auto;padding:20px 14px 20px}
@@ -237,11 +280,12 @@ def ui():
     .btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--fg);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff}
+    .btn.info{background:var(--accent2);border-color:var(--accent2);color:#fff}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     .tip{color:var(--muted);font-size:13px}
     .imgwrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px}
     img,video,canvas{max-width:100%;display:block;border-radius:10px}
-    footer{color:#64748b;font-size:12px;text-align:center;margin-top:12px}
+    .status{margin-top:8px;min-height:22px}
   </style>
 </head>
 <body>
@@ -251,7 +295,7 @@ def ui():
       <h1>Identificação de Pimentas</h1>
     </header>
 
-    <section class="card" style="margin-top:12px">
+    <section class="card">
       <div class="row">
         <button id="btnPick" class="btn">Escolher imagem</button>
         <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
@@ -261,9 +305,9 @@ def ui():
         <button id="btnShot" class="btn" style="display:none">Capturar</button>
 
         <button id="btnSend" class="btn accent" disabled>Identificar</button>
-        <button id="btnChat" class="btn" style="display:none">Mais informações</button>
+        <button id="btnChat" class="btn info" style="display:none">Mais informações</button>
       </div>
-      <p class="tip" style="margin-top:6px">A imagem é comprimida (~1024px) antes do envio para acelerar.</p>
+      <p class="tip">A imagem é comprimida para ~1024px antes do envio para acelerar.</p>
 
       <div class="row" style="margin-top:10px">
         <div class="imgwrap" style="flex:1">
@@ -277,9 +321,9 @@ def ui():
           <img id="annotated" alt="resultado"/>
         </div>
       </div>
-    </section>
 
-    <footer>Desenvolvido por <strong>Madalena de Oliveira Barbosa</strong>, 2025</footer>
+      <div id="resumo" class="status tip"></div>
+    </section>
   </div>
 
 <script>
@@ -287,6 +331,9 @@ const API = window.location.origin;
 let currentFile = null;
 let stream = null;
 let lastClass = null;
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function setStatus(txt){ document.getElementById('resumo').textContent = txt; }
 
 async function compressImage(file, maxSide=1024, quality=0.85){
   return new Promise((resolve,reject)=>{
@@ -306,10 +353,32 @@ async function compressImage(file, maxSide=1024, quality=0.85){
   });
 }
 
+async function waitReady(){
+  try{
+    const r = await fetch(API + "/", {cache:"no-store"});
+    const d = await r.json();
+    if(!d.ready){
+      setStatus("Iniciando o modelo…");
+      await sleep(1200);
+      return waitReady();
+    }
+    setStatus("");
+  }catch(e){
+    setStatus("Sem conexão, tentando novamente…");
+    await sleep(1200);
+    return waitReady();
+  }
+}
+waitReady();
+
+// -------- inputs
 const inputGallery = document.getElementById('fileGallery');
 const inputCamera  = document.getElementById('fileCamera');
 
-document.getElementById('btnPick').onclick = () => { inputGallery.value=""; inputGallery.click(); };
+document.getElementById('btnPick').onclick = () => {
+  inputGallery.value = "";
+  inputGallery.click();
+};
 inputGallery.onchange = () => useLocalFile(inputGallery.files?.[0]);
 inputCamera.onchange  = () => useLocalFile(inputCamera.files?.[0]);
 
@@ -318,10 +387,11 @@ async function useLocalFile(f){
   currentFile = await compressImage(f);
   document.getElementById('preview').src = URL.createObjectURL(currentFile);
   document.getElementById('preview').style.display = "block";
-  document.getElementById('video').style.display = "none";
+  document.getElementById('video').style.display   = "none";
   document.getElementById('btnSend').disabled = false;
   document.getElementById('btnChat').style.display = "none";
   lastClass = null;
+  setStatus("Imagem pronta para envio.");
 }
 
 const btnCam  = document.getElementById('btnCam');
@@ -336,9 +406,10 @@ btnCam.onclick = async () => {
     video.style.display = "block";
     document.getElementById('preview').style.display = "none";
     btnShot.style.display = "inline-block";
+    setStatus("Câmera aberta");
   }catch(e){
     inputCamera.value = "";
-    inputCamera.click(); // fallback WebView
+    inputCamera.click(); // fallback: seletor que abre câmera nativa no WebView
   }
 };
 
@@ -356,25 +427,32 @@ btnShot.onclick = () => {
     document.getElementById('btnSend').disabled = false;
     document.getElementById('btnChat').style.display = "none";
     lastClass = null;
+    setStatus("Foto capturada");
   },"image/jpeg",0.92);
 };
 
+// -------- predição
 document.getElementById('btnSend').onclick = async () => {
   if(!currentFile) return;
   document.getElementById('btnSend').disabled = true;
+  setStatus("Processando…");
   try{
     const fd=new FormData(); fd.append("file", currentFile, currentFile.name||"image.jpg");
     const r=await fetch(API + "/predict", {method:"POST", body:fd});
     const d=await r.json();
 
-    if(d.ok===false && d.warming_up){ alert("Aquecendo o modelo… tente novamente."); return; }
-    if(d.ok===false){ alert("Erro: " + (d.error||"desconhecido")); return; }
+    if(d.ok===false && d.warming_up){ setStatus("Aquecendo o modelo… toque novamente"); return; }
+    if(d.ok===false){ setStatus("Erro: " + (d.error||"desconhecido")); return; }
 
     if(d.image_b64){ document.getElementById('annotated').src = d.image_b64; }
     else if(d.image_url){
       const url = d.image_url.startsWith("http")? d.image_url : (API + d.image_url);
       document.getElementById('annotated').src = url;
     }
+
+    const resumo = d.top_pred ? `Detectado: ${d.top_pred.classe} · ${Math.round((d.top_pred.conf||0)*100)}% · Caixas: ${d.num_dets}`
+                              : "Nenhuma pimenta detectada.";
+    setStatus(resumo);
 
     const chatBtn = document.getElementById('btnChat');
     if(d.top_pred && d.top_pred.classe){
@@ -384,249 +462,336 @@ document.getElementById('btnSend').onclick = async () => {
     }else{
       chatBtn.style.display = "none";
       lastClass = null;
-      alert("Nenhuma pimenta detectada.");
     }
   }catch(e){
-    alert("Falha ao chamar a API.");
+    setStatus("Falha ao chamar a API.");
   }finally{
     document.getElementById('btnSend').disabled = false;
   }
 };
 </script>
+
+<script>
+  // SW + A2HS
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js');
+  }
+  let _deferredPrompt=null;
+  window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
+
+  // Splash de 1,8s (ou até a página carregar, o que levar mais tempo)
+  const hideSplash = () => {
+    const el = document.getElementById('pwa-splash');
+    if (el) el.classList.add('hide-splash'), setTimeout(() => el.remove(), 300);
+  };
+  // Garante 1,8 s visíveis
+  const MIN = 1800;
+  const t0 = performance.now();
+  window.addEventListener('load', () => {
+    const dt = performance.now() - t0;
+    const wait = Math.max(0, MIN - dt);
+    setTimeout(hideSplash, wait);
+  });
+  // Se quiser expor um botão "Instalar" na UI:
+  // document.getElementById('btnInstall')?.addEventListener('click', async ()=>{
+  //   if(!_deferredPrompt) return;
+  //   _deferredPrompt.prompt(); _deferredPrompt = null;
+  // });
+</script>
+
+
+
+
 </body>
 </html>
 """
-    return HTMLResponse(apply_pwa(html))
+    return HTMLResponse(content=html)
 
-# ===================== CHAT — estilo WhatsApp com emojis 1–8 =====================
-from typing import Optional
-from fastapi import Request
-from fastapi.responses import HTMLResponse
-import json
-
-ALIASES = {
-    "biquinho": ["biquinho", "pimenta biquinho", "sweet drop"],
-    "bode": ["bode", "pimenta de bode", "bode vermelha", "bode amarela"],
-    "cambuci": ["cambuci", "chapéu-de-frade", "chapeu de frade", "chapéu de frade"],
-    "chilli": ["chilli", "chili", "pimenta chili", "pimenta chilli"],
-    "fidalga": ["fidalga", "fidalga-pepper"],
-    "habanero": ["habanero", "pimenta habanero"],
-    "jalapeno": ["jalapeno", "jalapeño", "jalapenho", "pimenta jalapeno"],
-    "scotch": ["scotch", "scotch bonnet", "scotch-bonnet", "scotchbonnet"]
-}
 
 @app.get("/info")
-def info(req: Request, pepper: Optional[str] = None):
-    # Serializa dados que vamos injetar
-    aliases_json  = json.dumps(ALIASES, ensure_ascii=False)
-    current_json  = json.dumps(pepper or "", ensure_ascii=False)
-
-    # HTML SEM f-string (usa marcadores __CURRENT__ e __ALIASES__)
+def info():
     html = r"""
 <!doctype html>
 <html lang="pt-br">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-<title>Chat: Pimentas</title>
-<link rel="icon" href="/static/pimenta-logo.png">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <title>Chat de Pimentas</title>
+
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#16a34a">
+<link rel="icon" type="image/png" href="/static/pimenta-logo.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/pimenta-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- Splash em página (1,8 s): -->
 <style>
-  :root { --bg:#F6F8F3; --card:#fff; --fg:#0b1726; --muted:#6b7280; --brand:#0EA35A; --line:#e2e8f0; }
-  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui; }
-  .wrap { max-width:900px; margin:12px auto; padding:8px 12px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 2px 6px rgba(0,0,0,.06); }
-  .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
-  .msg { background:#f3f4f6; border-radius:14px; padding:12px; margin:10px 0; }
-  .me  { background:#e0f2fe; margin-left:auto; max-width:70%; white-space:pre-wrap; }
-  .bot { background:#ecfccb; max-width:80%; white-space:pre-wrap; }
-  .title { font-size:18px; font-weight:700; margin:6px 0 2px; }
-  .muted { color:var(--muted); font-size:13px }
-  .btn { border:0; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:12px; font-weight:600; cursor:pointer; text-decoration:none }
-  .btn.brand { background:var(--brand); color:#fff; }
-  #footer { position:sticky; bottom:0; background:var(--bg); padding:8px 0; }
-  input, button { font:inherit; }
-  #input { width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--line); }
+  #pwa-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #f7fafc url('/static/splash.png') center 30% / 480px no-repeat;
+    display: flex; align-items: flex-end; justify-content: center;
+    transition: opacity .28s ease; opacity: 1;
+  }
+  #pwa-splash .bar {
+    width: 56%; height: 12px; margin: 28px auto 10%;
+    border-radius: 999px; background: #e2e8f0; overflow: hidden;
+  }
+  #pwa-splash .bar::after {
+    content: ""; display: block; height: 100%;
+    width: 0%; background: #16a34a; animation: fill 1.8s linear forwards;
+  }
+  @keyframes fill { to { width: 100%; } }
+  .hide-splash { opacity: 0; pointer-events: none; }
 </style>
+
+
+
+  
+  <style>
+    :root{ --bg:#eef2f7; --chat:#fefefe; --mine:#dbeafe; --their:#f1f5f9; --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; }
+    *{box-sizing:border-box}
+    html,body{margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto;height:100%}
+    .wrap{max-width:880px;margin:auto;height:100%;display:flex;flex-direction:column}
+    header{padding:10px 12px;display:flex;align-items:center;gap:8px}
+    header .back{appearance:none;border:1px solid var(--line);background:#fff;border-radius:10px;padding:6px 10px;cursor:pointer}
+    header h1{font-size:18px;margin:0}
+    .chat{flex:1;display:flex;flex-direction:column;padding:10px}
+    .board{flex:1;background:var(--chat);border:1px solid var(--line);border-radius:14px;padding:10px;overflow:auto}
+    .row{display:flex;margin:6px 0}
+    .me{justify-content:flex-end}
+    .bubble{max-width:78%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);white-space:pre-wrap}
+    .bubble.me{background:var(--mine)}
+    .bubble.other{background:var(--their)}
+    .input{display:flex;gap:8px;margin-top:8px}
+    .input input{flex:1;padding:12px 12px;border-radius:14px;border:1px solid var(--line);font-size:16px}
+    .input button{padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:var(--accent);color:#fff;font-weight:700;cursor:pointer}
+    .hint{color:var(--muted);font-size:13px;margin-bottom:6px}
+    .pill{display:inline-block;padding:4px 8px;border:1px solid var(--line);border-radius:999px;background:#fff;margin-right:6px;font-size:12px}
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="row">
-    <div class="title">Chat: <span id="pep"></span></div>
-    <a href="/ui" class="btn">← Voltar</a>
-  </div>
+  <div class="wrap">
+    <header>
+      <button class="back" onclick="history.back()">← Voltar</button>
+      <h1 id="title">Chat</h1>
+    </header>
 
-  <div id="chat" class="card"></div>
-
-  <div id="footer" class="row" style="gap:8px;">
-    <input id="input" placeholder="Digite 1–8 ou o nome/sinônimo (ex.: chilli, jalapeño, cambuci)…">
-    <button id="send" class="btn brand">Enviar</button>
+    <div class="chat">
+      <div class="hint"><span class="pill">Digite 1–8</span> ou escreva o nome/sinônimo da pimenta (ex.: <em>chilli, jalapeño, biquinho…</em>)</div>
+      <div id="board" class="board"></div>
+      <div class="input">
+        <input id="inp" placeholder="Digite a opção (1–8) ou o nome da pimenta…"/>
+        <button id="send">Enviar</button>
+      </div>
+    </div>
   </div>
-</div>
 
 <script>
-const KB_URL = '/static/pepper_info.json';
-let KB = {};
-let current = __CURRENT__;
+const qs = new URLSearchParams(location.search);
+const pepperFromQuery = qs.get("pepper") || "";
 
-const MENU = [
-  "1️⃣ O que é",
-  "2️⃣ Ardência (SHU)",
-  "3️⃣ Usos/Receitas",
-  "4️⃣ Conservação",
-  "5️⃣ Substituições",
-  "6️⃣ Origem",
-  "7️⃣ Curiosidades/Extras",
-  "8️⃣ Trocar pimenta"
-].join("\n");
+let KB = null;    // base de conhecimento
+let CUR = null;   // chave atual da pimenta
 
-const ALIASES = __ALIASES__;
-
-function dom(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
-function push(text, who){
-  const el = dom('div', 'msg ' + (who==='me'?'me':'bot'), text);
-  document.getElementById('chat').appendChild(el);
-  el.scrollIntoView({behavior:'smooth', block:'end'});
+// ------------------ utilidades ------------------
+function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+function addMsg(txt, me=false){
+  const row=el("div","row"+(me?" me":""));
+  const b=el("div","bubble"+(me?" me":" other")); b.textContent=txt;
+  row.appendChild(b); document.getElementById("board").appendChild(row);
+  const bd=document.getElementById("board"); bd.scrollTop=bd.scrollHeight;
 }
-function me(t){ push(t,'me'); }
-function bot(t){ push(t,'bot'); }
-
-function norm(s){
-  return (s||"").toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .replace(/-?pepper/g,'')
-    .replace(/[^a-z0-9\s-]/g,'').trim();
+function normalize(s){
+  return (s||"").toString().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"") // tira acentos
+    .replace(/[^a-z0-9\s-]/g," ").replace(/\s+/g," ").trim();
 }
 
-function matchPepper(q){
-  const n = norm(q);
-  if(!n) return null;
-  for(const k of Object.keys(KB)){ if(norm(k)===n) return k; }
-  for(const [k, arr] of Object.entries(ALIASES)){
-    for(const a of arr){ if(norm(a)===n) return k; }
+// fallback mínimo — usado se /static/pepper_info.json falhar
+const FALLBACK_KB = {
+ "Biquinho-Pepper": {nome:"Biquinho-Pepper", sinonimos:["biquinho","pimenta biquinho"] ,
+   descricao:"Muito suave, aromática, ótima para conservas e petiscos.", scoville:"0–1.000"},
+ "Bode-Pepper": {nome:"Bode-Pepper", sinonimos:["bode","pimenta bode"],
+   descricao:"Picância média-baixa; comum no Centro-Oeste.", scoville:"5.000–15.000"},
+ "Chili-Pepper": {nome:"Chili-Pepper", sinonimos:["chili","chilli","pimenta chili","pimenta chilli"],
+   descricao:"Termo amplo (misturas/variedades). Picância variável.", scoville:"varia"},
+ "Fidalga-Pepper": {nome:"Fidalga-Pepper", sinonimos:["fidalga","pimenta fidalga"],
+   descricao:"Aroma marcante, usada regionalmente em MG/GO.", scoville:"média"},
+ "Habanero-Pepper": {nome:"Habanero-Pepper", sinonimos:["habanero","pimenta habanero"],
+   descricao:"Muito picante, perfume frutado/cítrico. Use com parcimônia.", scoville:"100.000–350.000"},
+ "Jalapeño-Pepper": {nome:"Jalapeño-Pepper", sinonimos:["jalapeño","jalapeno","jalapenho","pimenta jalapeno","pimenta jalapeño"],
+   descricao:"Picância moderada; popular em nachos e picles.", scoville:"2.500–8.000"},
+ "ScotchBonnet-Pepper": {nome:"ScotchBonnet-Pepper", sinonimos:["scotch bonnet","scotchbonnet","pimenta scotch bonnet"],
+   descricao:"Muito picante, típica do Caribe.", scoville:"100.000–350.000"},
+ "Cambuci-Pepper": {nome:"Cambuci-Pepper", sinonimos:["cambuci","pimenta cambuci"],
+   descricao:"Formato de sino/chapéu; muito suave; conhecida como chapéu-de-frade.", scoville:"0–1.000"}
+};
+
+// menu textual
+function menuText(nome){
+  const n = nome || "pimenta";
+  return [
+    `📌 *${n}* — escolha uma opção:`,
+    `1️⃣  O que é`,
+    `2️⃣  Ardência (SHU)`,
+    `3️⃣  Usos/Receitas`,
+    `4️⃣  Conservação`,
+    `5️⃣  Substituições`,
+    `6️⃣  Origem`,
+    `7️⃣  Curiosidades/Extras`,
+    `8️⃣  Trocar pimenta`,
+    ``,
+    `💡 Você também pode digitar o *nome/sinônimo* da pimenta (ex.: jalapeno/jalapeño, chilli, biquinho…).`
+  ].join("\n");
+}
+
+// pega chave pelo nome/sinônimo
+function keyFromAny(raw){
+  if(!raw||!KB) return null;
+  if(KB[raw]) return raw;
+
+  const want = normalize(raw).replace(/-?pepper$/,'').replace(/-/g,' ').trim();
+
+  // nome exato
+  for (const k of Object.keys(KB)){
+    const n = normalize(KB[k].nome||k).replace(/-?pepper$/,'').replace(/-/g,' ').trim();
+    if(n===want) return k;
   }
-  for(const k of Object.keys(KB)){ if(norm(k).includes(n) || n.includes(norm(k))) return k; }
+  // sinônimos exatos: sinonimos / sinônimos / aliases
+  for (const k of Object.keys(KB)){
+    const synRaw = KB[k].sinonimos || KB[k]['sinônimos'] || KB[k].aliases || [];
+    const syns = synRaw.map(s => normalize(s).replace(/-?pepper$/,'').replace(/-/g,' ').trim());
+    if (syns.includes(want)) return k;
+  }
+  // contém/parecido
+  for (const k of Object.keys(KB)){
+    const n = normalize(KB[k].nome||k).replace(/-?pepper$/,'').replace(/-/g,' ').trim();
+    if(n.includes(want) || want.includes(n)) return k;
+    const synRaw = KB[k].sinonimos || KB[k]['sinônimos'] || KB[k].aliases || [];
+    const syns = synRaw.map(s => normalize(s).replace(/-?pepper$/,'').replace(/-/g,' ').trim());
+    if (syns.some(s => s.includes(want) || want.includes(s))) return k;
+  }
   return null;
 }
 
-function replyFor(pe, opt){
-  const info = KB[pe] || {};
+async function loadKB(){
+  try{
+    const r = await fetch("/static/pepper_info.json", {cache:"no-store"});
+    if(!r.ok) throw new Error("KB HTTP "+r.status);
+    KB = await r.json();
+  }catch(e){
+    KB = {};
+  }
+  if(!KB || !Object.keys(KB).length){
+    KB = FALLBACK_KB;
+    addMsg("⚠️ Não consegui carregar o arquivo local. Usei uma base mínima para continuar.");
+  }
+  if(KB.meta) delete KB.meta;
+}
+
+// mensagens por opção (usa dados do KB quando houver)
+function msgByOption(k, opt){
+  const d = KB[k] || {};
+  const nm = d.nome || k;
   switch(opt){
-    case '1': return info.descricao || 'Sem descrição.';
-    case '2': return info.shu ? ('Ardência (SHU): '+info.shu) : 'Sem SHU.';
-    case '3': return (info.usos ? 'Usos: '+info.usos+'\n' : '') + (info.receitas ? 'Receitas: '+info.receitas : (info.usos?'':'Sem sugestões.'));
-    case '4': return info.conservacao || 'Sem orientações de conservação.';
-    case '5': return (info.substituicoes || info.substituicoes_sugeridas || info.substitutos || 'Sem substituições.');
-    case '6': return info.origem || 'Sem dados de origem.';
-    case '7': return info.extras || 'Sem extras.';
-    case '8': return 'Ok! Digite o *nome* da pimenta para trocar (ex.: jalapeño, chilli, cambuci).';
-    default : return 'Opção inválida.\n\n'+MENU;
+    case "1": return d.descricao ? `Sobre ${nm}: ${d.descricao}` : `Sobre ${nm}: descrição indisponível.`;
+    case "2": return d.scoville ? `Ardência (SHU) de ${nm}: ${d.scoville}.` : `Não tenho registro de SHU para ${nm}.`;
+    case "3": return d.usos || d.receitas
+      ? `Usos/Receitas:\n${[d.usos, d.receitas].filter(Boolean).join("\n")}`
+      : `Sem usos/receitas registrados para ${nm}.`;
+    case "4": return d.conservacao || d.conservação || `Sem orientações de conservação registradas para ${nm}.`;
+    case "5": return d.substituicoes || d["substituições"] || d.substituicoes_sugeridas || `Sem substituições sugeridas para ${nm}.`;
+    case "6": return d.origem || `Origem não registrada para ${nm}.`;
+    case "7": return d.curiosidades || d.extras || `Sem curiosidades adicionais registradas para ${nm}.`;
+    default:  return menuText(d.nome || "pimenta");
   }
 }
 
-async function boot(){
-  try{ const r = await fetch(KB_URL, {cache:'no-store'}); KB = await r.json(); } catch(e){ KB = {}; }
-  document.getElementById('pep').textContent = current || '';
-  bot('Escolha pelo *menu 1–8* ou digite o *nome/sinônimo* da pimenta.');
-  if(current){
-    const m = matchPepper(current);
-    if(m && KB[m]){ current = m; bot('Pimenta atual: *'+m+'*'); }
-  }
-  bot(MENU);
+function setPepperByKey(k){
+  CUR = k;
+  const name = (KB[k] && KB[k].nome) ? KB[k].nome : k;
+  document.getElementById("title").textContent = "Chat: " + name;
+  addMsg(menuText(name));
 }
 
-function send(){
-  const el = document.getElementById('input');
-  const v = (el.value||'').trim();
-  if(!v) return;
-  el.value = '';
-  me(v);
+document.getElementById("send").onclick = () => {
+  const inp = document.getElementById("inp");
+  const txt = (inp.value||"").trim();
+  if(!txt) return;
+  inp.value = "";
+  addMsg(txt, true);
 
-  if(/^\s*[1-8]\s*$/.test(v) && current){
-    const ans = replyFor(current, v.trim());
-    bot(ans);
-    if(v.trim()==='8') current = "";
-    return;
-  }
-  if(/^\s*8\s*$/.test(v)){ bot('Digite o *nome* da pimenta.'); current=""; return; }
-
-  const m = matchPepper(v);
-  if(m && KB[m]){ current = m; document.getElementById('pep').textContent = m; bot('Ok! *'+m+'* selecionada.'); bot(MENU); return; }
-
-  if(current && KB[current]){
-    const q = v.toLowerCase();
-    const info = KB[current];
-    const parts = [];
-    if(/(o que|defini|sobre)/.test(q) && info.descricao) parts.push(info.descricao);
-    if(/(uso|receita|culin|molho)/.test(q)){ if(info.usos) parts.push('Usos: '+info.usos); if(info.receitas) parts.push('Receitas: '+info.receitas); }
-    if(/(conserva|armazen|guardar)/.test(q) && info.conservacao) parts.push('Conservação: '+info.conservacao);
-    if(/(substitu)/.test(q)){ const s = info.substituicoes||info.substituicoes_sugeridas||info.substitutos; if(s) parts.push('Substituições: '+s); }
-    if(/(origem|hist)/.test(q) && info.origem) parts.push('Origem: '+info.origem);
-    bot(parts.length ? parts.join('\n\n') : 'Não encontrei na base local. Use o menu 1–8 ou troque a pimenta (8️⃣).');
+  // se for número 1–8 e já temos pimenta, responde
+  if(/^[1-8]$/.test(txt) && CUR){
+    const m = msgByOption(CUR, txt);
+    addMsg(m);
     return;
   }
 
-  bot('Não entendi 🤷. Use *1–8* ou o *nome/sinônimo* da pimenta.\n\n'+MENU);
-}
+  // tentar mudar/definir pimenta
+  const k = keyFromAny(txt);
+  if(k){
+    addMsg("🔄 Trocando para: " + (KB[k].nome || k));
+    setPepperByKey(k);
+    return;
+  }
 
-document.getElementById('send').addEventListener('click', send);
-document.getElementById('input').addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
-boot();
+  // se digitou "8" ou "trocar", mostra menu da atual mesmo
+  if(txt === "8" || normalize(txt).startsWith("trocar")){
+    addMsg(menuText(KB[CUR]?.nome || "pimenta"));
+    return;
+  }
+
+  // fallback
+  addMsg("Não entendi 🫠. Responda com *1–8* ou digite o *nome/sinônimo* da pimenta.\n\n" + menuText(KB[CUR]?.nome || "pimenta"));
+};
+
+(async function(){
+  await loadKB();
+  // tenta vir da tela anterior
+  let k = keyFromAny(pepperFromQuery);
+  if(!k){
+    // default amigável
+    k = keyFromAny("Habanero-Pepper") || Object.keys(KB)[0];
+  }
+  addMsg("Use os botões ou digite o nome/sinônimo.");
+  setPepperByKey(k);
+})();
 </script>
+
+<script>
+  // SW + A2HS
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js');
+  }
+  let _deferredPrompt=null;
+  window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); _deferredPrompt=e; });
+
+  // Splash de 1,8s (ou até a página carregar, o que levar mais tempo)
+  const hideSplash = () => {
+    const el = document.getElementById('pwa-splash');
+    if (el) el.classList.add('hide-splash'), setTimeout(() => el.remove(), 300);
+  };
+  // Garante 1,8 s visíveis
+  const MIN = 1800;
+  const t0 = performance.now();
+  window.addEventListener('load', () => {
+    const dt = performance.now() - t0;
+    const wait = Math.max(0, MIN - dt);
+    setTimeout(hideSplash, wait);
+  });
+  // Se quiser expor um botão "Instalar" na UI:
+  // document.getElementById('btnInstall')?.addEventListener('click', async ()=>{
+  //   if(!_deferredPrompt) return;
+  //   _deferredPrompt.prompt(); _deferredPrompt = null;
+  // });
+</script>
+
+
+
 </body>
 </html>
 """
-    # injeta dados sem f-string
-    html = html.replace("__CURRENT__", current_json).replace("__ALIASES__", aliases_json)
-    return HTMLResponse(apply_pwa(html))
-
-
-# ===================== PWA: manifest, sw e splash injection =====================
-@app.get("/manifest.webmanifest", include_in_schema=False)
-def pwa_manifest():
-    return FileResponse("static/manifest.webmanifest",
-                        media_type="application/manifest+json")
-
-@app.get("/sw.js", include_in_schema=False)
-def pwa_sw():
-    return FileResponse("static/sw.js", media_type="text/javascript")
-
-PWA_HEAD = """
-<link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#16a34a">
-<link rel="icon" type="image/png" sizes="192x192" href="/static/pimenta-logo.png">
-<link rel="apple-touch-icon" href="/static/pimenta-512.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<style>
-  #pwa-splash{position:fixed;inset:0;z-index:9999;background:#f7fafc url('/static/splash.png') center 30%/480px no-repeat;display:flex;align-items:flex-end;justify-content:center;transition:opacity .28s ease;opacity:1}
-  #pwa-splash .bar{width:56%;height:12px;margin:28px auto 10%;border-radius:999px;background:#e2e8f0;overflow:hidden}
-  #pwa-splash .bar::after{content:"";display:block;height:100%;width:0%;background:#16a34a;animation:fill 1.8s linear forwards}
-  .hide-splash{opacity:0;pointer-events:none}
-  @keyframes fill{to{width:100%}}
-</style>
-"""
-PWA_BODY_START = """<div id="pwa-splash" aria-hidden="true"><div class="bar"></div></div>"""
-PWA_FOOT = """
-<script>
-  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js', { scope: '/' }); }
-  let _t0=performance.now(); const MIN=1800;
-  function hideSplash(){ const el=document.getElementById('pwa-splash'); if(el){ el.classList.add('hide-splash'); setTimeout(()=>el.remove(),300); } }
-  window.addEventListener('load', ()=>{ const dt=performance.now()-_t0; setTimeout(hideSplash, Math.max(0, MIN-dt)); });
-</script>
-"""
-def apply_pwa(html: str) -> str:
-    if "</head>" in html: html = html.replace("</head>", PWA_HEAD + "</head>", 1)
-    if "<body>" in html:  html = html.replace("<body>", "<body>" + PWA_BODY_START, 1)
-    if "</body>" in html: html = html.replace("</body>", PWA_FOOT + "</body>", 1)
-    return html
-
-# ===================== ROOT → /ui =====================
-@app.get("/", include_in_schema=False)
-def root_redirect():
-    return RedirectResponse(url="/ui")
-
-# ===================== MAIN (local) =====================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    return HTMLResponse(content=html)
 

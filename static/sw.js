@@ -1,12 +1,12 @@
 /* Pimentas PWA SW — cache estático + app shell */
-const VERSION = 'v5.0';
+const VERSION = 'v6.0';
 const STATIC_CACHE = `static-${VERSION}`;
 const APP_SHELL = [
   '/', '/ui', '/info',
-  '/static/manifest.webmanifest',
+  '/static/icons/manifest.webmanifest',
   '/static/pimenta-logo.png',
   '/static/pimenta-512.png',
-  '/static/splash.png',
+  '/static/icons/splash.png',
   '/static/pepper_info.json'
 // sw.js — cache básico do PWA
 const CACHE = "pimentas-v1";

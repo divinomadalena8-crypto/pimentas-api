@@ -1,5 +1,5 @@
 /* Pimentas PWA SW - v1.0 (Corrigido) */
-const CACHE_NAME = 'pimentas-cache-v1';
+const CACHE_NAME = 'pimentas-cache-v2';
 
 // O "App Shell" - tudo que o app precisa para carregar
 // Verifique se todos os caminhos estão corretos

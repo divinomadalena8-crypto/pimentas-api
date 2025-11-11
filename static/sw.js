@@ -1,101 +1,107 @@
-/* Pimentas PWA SW — cache estático + app shell */
-const VERSION = 'v6.0';
-const STATIC_CACHE = `static-${VERSION}`;
+/* Pimentas PWA SW - v1.0 (Corrigido) */
+const CACHE_NAME = 'pimentas-cache-v1';
+
+// O "App Shell" - tudo que o app precisa para carregar
+// Verifique se todos os caminhos estão corretos
 const APP_SHELL = [
-  '/', '/ui', '/info',
-  '/static/icons/manifest.webmanifest',
-  '/static/pimenta-logo.png',
-  '/static/pimenta-512.png',
-  '/static/icons/splash.png',
-  '/static/pepper_info.json'
-// sw.js — cache básico do PWA
-const CACHE = "pimentas-v1";
-const ASSETS = [
-  "/",
-  "/ui",
-  "/manifest.webmanifest",
-  "/static/pimenta-logo.png",
-  "/static/pimenta-512.png",
-  "/static/splash.png",
-  "/static/pepper_info.json"
+  '/ui',
+  '/info',
+  '/static/manifest.webmanifest',    // O manifesto (na pasta /static/)
+  '/static/icons/pimenta-192.png', // Ícone 1 (na pasta /static/icons/)
+  '/static/icons/pimenta-512.png', // Ícone 2 (na pasta /static/icons/)
+  '/static/icons/splash.png',      // Splash (na pasta /static/icons/)
+  '/static/pepper_info.json'       // O arquivo de dados (na pasta /static/)
 ];
 
-// Instala: pré-cache do shell
-self.addEventListener('install', (evt) => {
-self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
-  self.skipWaiting();
-  evt.waitUntil(caches.open(STATIC_CACHE).then(c => c.addAll(APP_SHELL)));
-});
-
-// Ativa: limpa caches antigos
-self.addEventListener('activate', (evt) => {
-  evt.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== STATIC_CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+// 1. Instala o Service Worker
+self.addEventListener('install', (event) => {
+  console.log('SW: Instalando...');
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => {
+        console.log('SW: Cache aberto. Adicionando o App Shell.');
+        // Adiciona todos os arquivos do APP_SHELL ao cache
+        return cache.addAll(APP_SHELL);
+      })
+      .then(() => {
+        // Força o novo service worker a se tornar ativo
+        return self.skipWaiting();
+      })
   );
-self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
 });
 
-// Busca: cache-first para estáticos; network-first para páginas
-self.addEventListener('fetch', (evt) => {
-  const url = new URL(evt.request.url);
-self.addEventListener("fetch", (event) => {
+// 2. Ativa o Service Worker (limpa caches antigos)
+self.addEventListener('activate', (event) => {
+  console.log('SW: Ativando...');
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        // Deleta todos os caches que não sejam o CACHE_NAME atual
+        cacheNames.map((cacheName) => {
+          if (cacheName !== CACHE_NAME) {
+            console.log('SW: Limpando cache antigo:', cacheName);
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    }).then(() => {
+      // Toma controle da página imediatamente
+      return self.clients.claim();
+    })
+  );
+});
+
+// 3. Intercepta os pedidos (Fetch)
+self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  // Nunca interceptar /predict
-  if (url.pathname.startsWith("/predict")) return;
 
-  // Nunca cacheie a inferência
-  if (url.pathname.startsWith('/predict')) return;
-
-  // Estáticos
-  if (url.pathname.startsWith('/static/')) {
-    evt.respondWith(
-      caches.open(STATIC_CACHE).then(cache =>
-        cache.match(evt.request).then(hit => hit || fetch(evt.request).then(r => {
-          cache.put(evt.request, r.clone()); return r;
-        }))
-      )
-    );
-  // network-first para páginas
-  if (url.pathname === "/ui" || url.pathname.startsWith("/info")) {
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(event.request);
-        const cache = await caches.open(CACHE);
-        cache.put(event.request, fresh.clone());
-        return fresh;
-      } catch (e) {
-        const cached = await caches.match(event.request);
-        return cached || new Response("Offline", { status: 503 });
-      }
-    })());
-    return;
+  // *** A REGRA MAIS IMPORTANTE ***
+  // Se for um pedido de API (POST) ou para o /predict,
+  // NÃO use o cache. Vá direto para a rede.
+  if (event.request.method === 'POST' || url.pathname.startsWith('/predict')) {
+    // Apenas busca na rede (comportamento normal do navegador)
+    return fetch(event.request);
   }
 
-  // Páginas do app (ui/info): network-first com fallback ao cache
-  if (url.pathname === '/' || url.pathname === '/ui' || url.pathname === '/info') {
-    evt.respondWith(
-      fetch(evt.request).then(r => {
-        const clone = r.clone();
-        caches.open(STATIC_CACHE).then(c => c.put(evt.request, clone));
-        return r;
-      }).catch(() => caches.match(evt.request))
+  // Para páginas (como /ui ou /info), tente a rede primeiro (Network-First).
+  // Se falhar (offline), pegue do cache.
+  if (url.pathname === '/ui' || url.pathname === '/info' || url.pathname === '/') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          // Se funcionou, salve uma cópia no cache e retorne
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+          return networkResponse;
+        })
+        .catch(() => {
+          // Se a rede falhou, tente pegar a versão do cache
+          return caches.match(event.request);
+        })
     );
+    return; // Importante para parar a execução aqui
   }
-  // cache-first para assets
-  event.respondWith((async () => {
-    const cached = await caches.match(event.request);
-    if (cached) return cached;
-    try {
-      const fresh = await fetch(event.request);
-      const cache = await caches.open(CACHE);
-      cache.put(event.request, fresh.clone());
-      return fresh;
-    } catch (e) {
-      return new Response("Offline", { status: 503 });
-    }
-  })());
+
+  // Para assets estáticos (imagens, JSON, etc.),
+  // tente o cache primeiro (Cache-First). Se não achar, vá para a rede.
+  event.respondWith(
+    caches.match(event.request)
+      .then((cachedResponse) => {
+        if (cachedResponse) {
+          // Se achou no cache, retorna
+          return cachedResponse;
+        }
+        // Se não achou, vá para a rede
+        return fetch(event.request).then((networkResponse) => {
+          // E salve uma cópia no cache para a próxima vez
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+          return networkResponse;
+        });
+      })
+  );
 });
